@@ -1,7 +1,10 @@
 /**
  * Best-effort parser for Neversoft / THPS-style `.psx` mesh files.
  * Layout follows public notes: header, objects[], model table, model blobs (gist by iamgreaser).
- * After merge, Y is negated for Three.js “up”; a single-axis flip swaps winding, so indices are reversed per triangle.
+ * Plain mesh: after merge, the preview basis reflects X and Y (a 180-degree model-space rotation),
+ * with the same index order preserved.
+ * Textured mesh: vertices and UVs are built in Neversoft space, then the **same** XY reflection runs
+ * once on the buffer so 3D and decals stay in sync (see `attachTexturesIfAny`).
  * @see https://gist.github.com/iamgreaser/b54531e41d77b69d7d13391deb0ac6a5
  */
 
@@ -26,34 +29,23 @@ const MAX_VERTS_TOTAL = 120_000;
 const MAX_INDICES_TOTAL = 600_000;
 const MAX_TEX_TRIS = 200_000;
 
+/** `localStorage` value `"1"` enables socket/plug character merge for multi-model `.psx` files. */
+export const PSX_CHARACTER_ASSEMBLY_STORAGE_KEY = "pkr-explorer-psx-character-assembly";
+
 const OBJECT_STRIDE = 36;
 const PSX_WARN_ONCE = new Set();
 
 /**
- * Engine meshes read upright on X/Z but inverted on Y relative to Three.js. Flip Y only (avoid Y↔Z swap — that laid models on their side).
- * Reflection reverses winding; swap the last two indices per triangle so normals stay outward after computeVertexNormals().
+ * Final Neversoft-space preview basis: reflect X and Y (equivalent to a 180-degree model-space
+ * rotation for preview purposes). This matches the orientation expected by current THPS props and
+ * vehicles without needing any UV-space compensation.
  * @param {Float32Array} positions
- * @param {Uint32Array} indices
  */
-function flipNeversoftYForThree(positions, indices) {
+function reflectNeversoftForThree(positions) {
   for (let i = 0; i < positions.length; i += 3) {
+    positions[i] = -positions[i];
     positions[i + 1] = -positions[i + 1];
   }
-  for (let i = 0; i < indices.length; i += 3) {
-    const t = indices[i + 1];
-    indices[i + 1] = indices[i + 2];
-    indices[i + 2] = t;
-  }
-}
-
-/**
- * @param {Uint8Array | null} uv8 length 8 or null
- * @param {number} corner 0..3
- */
-function uvBytePair(uv8, corner) {
-  if (!uv8 || corner < 0 || corner > 3) return { u: 0, v: 0 };
-  const o = corner * 2;
-  return { u: uv8[o], v: uv8[o + 1] };
 }
 
 /**
@@ -64,6 +56,29 @@ function warnOnce(key, message) {
   if (PSX_WARN_ONCE.has(key)) return;
   PSX_WARN_ONCE.add(key);
   console.warn(message);
+}
+
+/**
+ * @param {Uint8Array | null} uv8 length 8 or null
+ * @param {number} corner 0..3
+ */
+function uvBytePair(uv8, corner) {
+  if (!uv8 || uv8.length < 8) {
+    warnOnce(
+      "psx-uv8-missing",
+      "[psx-model] Face has no 8-byte UV payload (or buffer too short); sampling (0,0) — check face decode if textures show solid corner bleed."
+    );
+    return { u: 0, v: 0 };
+  }
+  if (corner < 0 || corner > 3) {
+    warnOnce(
+      "psx-uv-corner-bad",
+      `[psx-model] UV corner ${corner} is not 0..3; using (0,0).`
+    );
+    return { u: 0, v: 0 };
+  }
+  const o = corner * 2;
+  return { u: uv8[o], v: uv8[o + 1] };
 }
 
 /**
@@ -330,7 +345,7 @@ function pushSubdividedGeomQuad(positions, indices, a, b, c, d) {
 
 /**
  * @param {{ key: number, ax: number, ay: number, az: number, au: number, av: number, bx: number, by: number, bz: number, bu: number, bv: number, cx: number, cy: number, cz: number, cu: number, cv: number }[]} tris
- * @param {Map<number, { width: number, height: number, rgba: Uint8ClampedArray }>} texByIndex
+ * @param {Map<number, { width: number, height: number, strideWidth?: number, rgba: Uint8ClampedArray }>} texByIndex
  */
 export function buildTexturedMeshBuffers(tris, texByIndex) {
   if (tris.length === 0) return null;
@@ -373,8 +388,13 @@ export function buildTexturedMeshBuffers(tris, texByIndex) {
       let uf;
       let vf;
       if (td) {
-        uf = ub / td.width;
-        vf = 1 - vb / td.height;
+        // Face UV bytes are boundary coordinates, so normalize directly by the decoded texture size.
+        // The preview transform is a model-space XY reflection, so UVs stay in source order.
+        // Preserve the top-origin V convention paired with flipY=false.
+        const w = Math.max(1, td.width);
+        const h = Math.max(1, td.height);
+        uf = ub / w;
+        vf = vb / h;
       } else {
         uf = 0;
         vf = 0;
@@ -420,32 +440,6 @@ export function buildTexturedMeshBuffers(tris, texByIndex) {
 }
 
 /**
- * @param {{ key: number, ax: number, ay: number, az: number, au: number, av: number, bx: number, by: number, bz: number, bu: number, bv: number, cx: number, cy: number, cz: number, cu: number, cv: number }[]} tris
- */
-function flipTexturedTrisForThree(tris) {
-  for (const t of tris) {
-    t.ay = -t.ay;
-    t.by = -t.by;
-    t.cy = -t.cy;
-    const bx = t.bx;
-    const by = t.by;
-    const bz = t.bz;
-    const bu = t.bu;
-    const bv = t.bv;
-    t.bx = t.cx;
-    t.by = t.cy;
-    t.bz = t.cz;
-    t.bu = t.cu;
-    t.bv = t.cv;
-    t.cx = bx;
-    t.cy = by;
-    t.cz = bz;
-    t.cu = bu;
-    t.cv = bv;
-  }
-}
-
-/**
  * @param {DataView} dv
  * @param {number} objOff
  * @param {number} fileLen
@@ -460,18 +454,18 @@ function readObject(dv, objOff, fileLen) {
 }
 
 /**
- * Parse one model's vertices and resolve local weld indirections.
- * `pad == 2` usually means `iy` is another vertex index in this model; out-of-range references
- * are kept as raw coordinates for now but warned once, because some skater assets may weld across
- * sibling parts rather than within a single model.
+ * Parse one model's vertices. pad=0 / pad=1: s3.12 (ix,iy,iz).
+ * pad=2: either (a) **plug** for multi-part character assembly — iy is socket ordinal, ix/iz only as offsets;
+ * or (b) **legacy weld** within one model (recursive index iy) for levels / props when `resolvePad2AsPlug` is false.
  * @param {DataView} dv
  * @param {number} ptr
  * @param {number} fileLen
  * @param {number} tx
  * @param {number} ty
  * @param {number} tz
+ * @param {boolean} [resolvePad2AsPlug]
  */
-function buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz) {
+function buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz, resolvePad2AsPlug = false) {
   if (ptr < 0 || ptr + 28 > fileLen) return null;
 
   const modelUnknown = dv.getUint16(ptr, true);
@@ -499,17 +493,17 @@ function buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz) {
   }
 
   /** @param {number} ri @param {number} depth */
-  function resolvedXYZ(ri, depth) {
+  function resolvedXYZWeld(ri, depth) {
     if (depth > 64) return { x: 0, y: 0, z: 0 };
     const v = rawV[ri];
     if (v.pad !== 2) {
       return { x: s312(v.ix), y: s312(v.iy), z: s312(v.iz) };
     }
     const j = v.iy;
-    if (j >= 0 && j < rawV.length && j !== ri) return resolvedXYZ(j, depth + 1);
+    if (j >= 0 && j < rawV.length && j !== ri) return resolvedXYZWeld(j, depth + 1);
     warnOnce(
       "psx-cross-model-weld",
-      "[psx-model] Saw pad==2 vertex indirection outside the current model; multi-part welds may need cross-model resolution."
+      "[psx-model] pad==2 weld fallback: iy out of range or self-ref; using raw ix,iy,iz as s3.12."
     );
     return { x: s312(v.ix), y: s312(v.iy), z: s312(v.iz) };
   }
@@ -517,7 +511,24 @@ function buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz) {
   /** @type {number[]} */
   const nextPos = [];
   for (let i = 0; i < nv; i++) {
-    const { x, y, z } = resolvedXYZ(i, 0);
+    const v = rawV[i];
+    let x;
+    let y;
+    let z;
+    if (resolvePad2AsPlug && v.pad === 2) {
+      x = s312(v.ix);
+      y = 0;
+      z = s312(v.iz);
+    } else if (!resolvePad2AsPlug && v.pad === 2) {
+      const p = resolvedXYZWeld(i, 0);
+      x = p.x;
+      y = p.y;
+      z = p.z;
+    } else {
+      x = s312(v.ix);
+      y = s312(v.iy);
+      z = s312(v.iz);
+    }
     nextPos.push(x + tx, y + ty, z + tz);
   }
 
@@ -527,9 +538,9 @@ function buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz) {
 /**
  * @param {{ key: number, ax: number, ay: number, az: number, au: number, av: number, bx: number, by: number, bz: number, bu: number, bv: number, cx: number, cy: number, cz: number, cu: number, cv: number }[]} acc
  */
-function appendModelTexTris(dv, ptr, fileLen, tx, ty, tz, acc) {
+function appendModelTexTris(dv, ptr, fileLen, tx, ty, tz, acc, resolvePad2AsPlug = false) {
   if (ptr < 0 || ptr + 28 > fileLen || acc.length >= MAX_TEX_TRIS) return -1;
-  const model = buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz);
+  const model = buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz, resolvePad2AsPlug);
   if (!model) return -1;
   const { modelUnknown, nv, nf, faceOff, nextPos } = model;
 
@@ -594,8 +605,8 @@ function appendModelTexTris(dv, ptr, fileLen, tx, ty, tz, acc) {
  * @param {number} ty
  * @param {number} tz
  */
-function extractOneModel(dv, ptr, fileLen, positions, indices, vertBase, tx, ty, tz) {
-  const model = buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz);
+function extractOneModel(dv, ptr, fileLen, positions, indices, vertBase, tx, ty, tz, resolvePad2AsPlug = false) {
+  const model = buildResolvedModelPositions(dv, ptr, fileLen, tx, ty, tz, resolvePad2AsPlug);
   if (!model) return -1;
   const { modelUnknown, nv, nf, faceOff, nextPos } = model;
   for (const c of nextPos) positions.push(c);
@@ -655,6 +666,389 @@ function readModelTablePtrs(dv, tableOff, fileLen) {
 }
 
 /**
+ * True when `ptr` points at a model blob that passes the same checks as mesh extraction
+ * (many skater table slots are placeholders — u32 0, garbage offset, or nv/nf nonsense).
+ * @param {DataView} dv
+ * @param {number} ptr
+ * @param {number} fileLen
+ */
+function isSaneModelBlob(dv, ptr, fileLen) {
+  if (ptr < 8 || ptr + 28 > fileLen) return false;
+  const nv = dv.getUint16(ptr + 2, true);
+  const np = dv.getUint16(ptr + 4, true);
+  const nf = dv.getUint16(ptr + 6, true);
+  if (nv === 0 || nv > 20000 || np > 20000 || nf > 50000 || nf === 0) return false;
+  let o = ptr + 28;
+  const vEnd = o + nv * 8;
+  const pEnd = vEnd + np * 8;
+  if (pEnd > fileLen) return false;
+  return true;
+}
+
+/**
+ * Count model pointers that at least cover a model header in-file (layout heuristic; not mesh sanity).
+ * @param {{ ptrs: number[], modelCount: number } | null} table
+ * @param {number} fileLen
+ */
+function countInBoundsModelPtrs(table, fileLen) {
+  if (!table) return 0;
+  let n = 0;
+  for (const p of table.ptrs) {
+    if (p >= 8 && p + 28 <= fileLen) n++;
+  }
+  return n;
+}
+
+/**
+ * Pick model table offset the same way the main parser effectively does: compare character layout
+ * (modelCount @8, ptrs @0xC) vs level layout (objCount @8, table after objects). Chooses the candidate
+ * with more in-bounds pointers so skaters are not misread as “19 objects + table in the weeds”.
+ * @param {DataView} dv
+ * @param {number} fileLen
+ * @returns {{ table: { ptrs: number[], modelCount: number }, tableOff: number, validPtrs: number, layoutDesc: string } | null}
+ */
+function resolveModelTableForDiagnostics(dv, fileLen) {
+  /** @type {{ table: { ptrs: number[], modelCount: number }; tableOff: number; validPtrs: number; layoutDesc: string } | null} */
+  let best = null;
+
+  const tChar = readModelTablePtrs(dv, 8, fileLen);
+  if (tChar) {
+    const v = countInBoundsModelPtrs(tChar, fileLen);
+    best = {
+      table: tChar,
+      tableOff: 8,
+      validPtrs: v,
+      layoutDesc: `character-style (modelCount @0x8=${tChar.modelCount}, ptrs @0xC)`,
+    };
+  }
+
+  const objCount = dv.getUint32(8, true);
+  if (
+    objCount > 0 &&
+    objCount <= MAX_OBJECTS &&
+    12 + objCount * OBJECT_STRIDE + 4 <= fileLen
+  ) {
+    const offLv = 12 + objCount * OBJECT_STRIDE;
+    const tLv = readModelTablePtrs(dv, offLv, fileLen);
+    if (tLv) {
+      const v = countInBoundsModelPtrs(tLv, fileLen);
+      if (!best || v > best.validPtrs) {
+        best = {
+          table: tLv,
+          tableOff: offLv,
+          validPtrs: v,
+          layoutDesc: `level-style (objCount @0x8=${objCount}, model table @0x${offLv.toString(16)})`,
+        };
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Stage 1 diagnostic: per-model pad=1 (socket) / pad=2 (plug) report for skater-style multi-model `.psx`.
+ * Call from devtools after loading bytes, e.g. `console.log(dumpPsxCharacterPadDiagnostics(bytes))`.
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+export function dumpPsxCharacterPadDiagnostics(bytes) {
+  if (bytes.length < 12) return "(file too small)";
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const fileLen = bytes.length;
+  const lines = [];
+
+  const nHex = Math.min(32, fileLen);
+  const hexChunks = [];
+  for (let i = 0; i < nHex; i += 4) {
+    const w = dv.getUint32(i, true);
+    hexChunks.push(`${i.toString(16).padStart(2, "0")}:${w.toString(16).padStart(8, "0")}`);
+  }
+  lines.push(`header[0..${nHex - 1}] (little-endian u32): ${hexChunks.join(" | ")}`);
+
+  const m0 = dv.getUint16(0, true);
+  const m2 = dv.getUint16(2, true);
+  const chunkPtr = dv.getUint32(4, true);
+  const u32at8 = dv.getUint32(8, true);
+  const u32atC = fileLen >= 16 ? dv.getUint32(12, true) : 0;
+  lines.push(
+    `decode: H@0=0x${m0.toString(16)} H@2=0x${m2.toString(16)} (expect 0x0004 0x0002) chunkPtr=0x${chunkPtr.toString(
+      16
+    )} u32@0x8=${u32at8} u32@0xC=0x${u32atC.toString(16)} — skater: @8=modelCount @C=ptr[0]; level: @8=objCount @C=obj0…`
+  );
+
+  const resolved = resolveModelTableForDiagnostics(dv, fileLen);
+  if (!resolved) {
+    lines.push("(no readable model table at 0x8 or after objects)");
+    return lines.join("\n");
+  }
+  const { table, tableOff, validPtrs, layoutDesc } = resolved;
+  lines.push(
+    `model_table_off=0x${tableOff.toString(16)} — ${layoutDesc}; in-bounds ptrs=${validPtrs}/${table.modelCount}`
+  );
+
+  const globalRunning = { n: 0 };
+  for (let m = 0; m < table.modelCount; m++) {
+    const ptr = table.ptrs[m];
+    if (!isSaneModelBlob(dv, ptr, fileLen)) {
+      lines.push(`model[${m}] (no mesh — bad ptr, nv/nf, or truncated blob)`);
+      continue;
+    }
+    const nv = dv.getUint16(ptr + 2, true);
+    const nf = dv.getUint16(ptr + 6, true);
+    let pad1 = 0;
+    let pad2 = 0;
+    let o = ptr + 28;
+    const pad1Lines = [];
+    const pad2Lines = [];
+    for (let i = 0; i < nv; i++) {
+      if (o + 8 > fileLen) break;
+      const ix = dv.getInt16(o, true);
+      const iy = dv.getInt16(o + 2, true);
+      const iz = dv.getInt16(o + 4, true);
+      const pad = dv.getInt16(o + 6, true);
+      o += 8;
+      if (pad === 1) {
+        pad1++;
+        const ord = globalRunning.n++;
+        const idU = (iy & 0xffff) >>> 0;
+        pad1Lines.push(
+          `  pad1 vert ${i}: bind_key=${ord} (pad2 plug iy matches this ordinal) iy_u16=${idU} raw(ix,iy,iz)=(${ix},${iy},${iz}) pos s3.12=( ${s312(ix).toFixed(2)}, ${s312(iy).toFixed(2)}, ${s312(iz).toFixed(2)})`
+        );
+      } else if (pad === 2) {
+        pad2++;
+        {
+          const keyU = (iy & 0xffff) >>> 0;
+          pad2Lines.push(
+            `  pad2 vert ${i}: plug_key=${keyU} → pad1 ordinal ${keyU} if present raw(ix,iy,iz)=(${ix},${iy},${iz}) offsets s3.12=( ${s312(ix).toFixed(2)}, —, ${s312(iz).toFixed(2)})`
+          );
+        }
+      }
+    }
+    lines.push(`model[${m}] nv=${nv} nf=${nf}  pad1_count=${pad1}  pad2_count=${pad2}`);
+    lines.push(...pad1Lines, ...pad2Lines);
+  }
+  lines.push(
+    `global pad1 count (ordinals 0…${globalRunning.n > 0 ? globalRunning.n - 1 : "—"}): ${globalRunning.n} — assembly resolves plug iy as a global pad=1 ordinal in model-file order`
+  );
+  return lines.join("\n");
+}
+
+/**
+ * @param {DataView} dv
+ * @param {number} fileLen
+ * @param {number[]} ptrs
+ * @param {number} modelCount
+ * @returns {{
+ *   globalSockets: { modelIdx: number, vertIdx: number, lx: number, ly: number, lz: number, ordinal: number }[],
+ *   modelPlugs: { key: number, lx: number, ly: number, lz: number }[][],
+ * } | null}
+ */
+function buildCharacterSocketPlugTables(dv, fileLen, ptrs, modelCount) {
+  /** @type { { modelIdx: number, vertIdx: number, lx: number, ly: number, lz: number, ordinal: number }[] } */
+  const globalSockets = [];
+  /** @type { { key: number, lx: number, ly: number, lz: number }[][] } */
+  const modelPlugs = Array.from({ length: modelCount }, () => []);
+
+  for (let m = 0; m < modelCount; m++) {
+    const ptr = ptrs[m];
+    if (!isSaneModelBlob(dv, ptr, fileLen)) continue;
+    const nv = dv.getUint16(ptr + 2, true);
+    let o = ptr + 28;
+    for (let i = 0; i < nv; i++) {
+      if (o + 8 > fileLen) break;
+      const ix = dv.getInt16(o, true);
+      const iy = dv.getInt16(o + 2, true);
+      const iz = dv.getInt16(o + 4, true);
+      const pad = dv.getInt16(o + 6, true);
+      o += 8;
+      if (pad === 1) {
+        const ordinal = globalSockets.length;
+        globalSockets.push({
+          modelIdx: m,
+          vertIdx: i,
+          lx: s312(ix),
+          ly: s312(iy),
+          lz: s312(iz),
+          ordinal,
+        });
+      } else if (pad === 2) {
+        modelPlugs[m].push({
+          key: (iy & 0xffff) >>> 0,
+          lx: s312(ix),
+          ly: 0,
+          lz: s312(iz),
+        });
+      }
+    }
+  }
+
+  if (globalSockets.length === 0) return null;
+  return { globalSockets, modelPlugs };
+}
+
+/**
+ * @param {{ modelIdx: number, lx: number, ly: number, lz: number, ordinal: number }[]} globalSockets
+ * @param {{ x: number, y: number, z: number }[]} socketWorldByOrdinal
+ * @param {number} m
+ * @param {{ x: number, y: number, z: number }} T
+ */
+function registerSocketWorldsForModel(globalSockets, socketWorldByOrdinal, m, T) {
+  for (const s of globalSockets) {
+    if (s.modelIdx !== m) continue;
+    const w = { x: T.x + s.lx, y: T.y + s.ly, z: T.z + s.lz };
+    socketWorldByOrdinal[s.ordinal] = w;
+  }
+}
+
+/**
+ * pad=2 plug `iy` is the global index of a pad=1 socket in model-file order (ordinal).
+ * @param {number} plugKey
+ * @param {({ x: number, y: number, z: number } | undefined)[]} byOrd — pad1 positions by ordinal
+ */
+function resolveSocketWorldForPlug(plugKey, byOrd) {
+  if (plugKey < byOrd.length) {
+    const o = byOrd[plugKey];
+    if (o !== undefined) return o;
+  }
+  return undefined;
+}
+
+/**
+ * Multi-model character bind pose: pad=2 plug `iy` indexes pad=1 sockets by **global ordinal** (pad1 count in file order).
+ * Empty table slots (no mesh) are ignored.
+ * Math in Neversoft space; the final preview reflection runs after merge.
+ * @param {DataView} dv
+ * @param {number} tableOff
+ * @param {number} fileLen
+ * @param {{ ptrs: number[], modelCount: number }} table
+ * @param {Array<{ key: number, ax: number, ay: number, az: number, au: number, av: number, bx: number, by: number, bz: number, bu: number, bv: number, cx: number, cy: number, cz: number, cu: number, cv: number }>} texAcc
+ */
+function tryMergeCharacterAssembled(dv, tableOff, fileLen, table, texAcc) {
+  const { ptrs, modelCount } = table;
+  if (modelCount <= 1) return null;
+
+  try {
+    if (localStorage.getItem(PSX_CHARACTER_ASSEMBLY_STORAGE_KEY) !== "1") return null;
+  } catch {
+    return null;
+  }
+
+  /** @type {number[]} */
+  const saneIndices = [];
+  for (let m = 0; m < modelCount; m++) {
+    if (isSaneModelBlob(dv, ptrs[m], fileLen)) saneIndices.push(m);
+  }
+  if (saneIndices.length === 0) return null;
+
+  const sp = buildCharacterSocketPlugTables(dv, fileLen, ptrs, modelCount);
+  if (!sp) return null;
+
+  const { globalSockets, modelPlugs } = sp;
+  const nSock = globalSockets.length;
+
+  /** @type {Set<number>} */
+  const mustPlace = new Set(saneIndices);
+
+  let root = -1;
+  for (let m = 0; m < modelCount; m++) {
+    if (!mustPlace.has(m)) continue;
+    if (modelPlugs[m].length === 0) {
+      root = m;
+      break;
+    }
+  }
+  if (root < 0) {
+    root = saneIndices[0];
+  }
+
+  /** @type {{ x: number, y: number, z: number }[]} */
+  const T = Array.from({ length: modelCount }, () => ({ x: 0, y: 0, z: 0 }));
+  const placed = new Set([root]);
+  T[root] = { x: 0, y: 0, z: 0 };
+
+  /** @type {({ x: number, y: number, z: number } | undefined)[]} */
+  const socketWorldByOrdinal = Array.from({ length: nSock }, () => undefined);
+
+  registerSocketWorldsForModel(globalSockets, socketWorldByOrdinal, root, T[root]);
+
+  for (let iter = 0; iter < modelCount; iter++) {
+    let progress = false;
+    for (let m = 0; m < modelCount; m++) {
+      if (placed.has(m)) continue;
+      if (!mustPlace.has(m)) continue;
+      const plugs = modelPlugs[m];
+      if (plugs.length === 0) {
+        continue;
+      }
+      let sx = 0;
+      let sy = 0;
+      let sz = 0;
+      let matched = 0;
+      for (const pl of plugs) {
+        const sw = resolveSocketWorldForPlug(pl.key, socketWorldByOrdinal);
+        if (!sw) continue;
+        sx += sw.x - pl.lx;
+        sy += sw.y - pl.ly;
+        sz += sw.z - pl.lz;
+        matched++;
+      }
+      if (matched === 0) continue;
+      T[m] = { x: sx / matched, y: sy / matched, z: sz / matched };
+      placed.add(m);
+      registerSocketWorldsForModel(globalSockets, socketWorldByOrdinal, m, T[m]);
+      progress = true;
+    }
+    if (!progress) break;
+  }
+
+  for (const m of mustPlace) {
+    if (!placed.has(m)) {
+      warnOnce(
+        "psx-character-assembly-incomplete",
+        `[psx-model] Character assembly placed ${placed.size}/${mustPlace.size} mesh part(s) — some plug ordinals did not resolve to earlier pad=1 sockets; falling back to largest-part preview.`
+      );
+      return null;
+    }
+  }
+
+  /** @type {number[]} */
+  const posAcc = [];
+  /** @type {number[]} */
+  const idxAcc = [];
+  let vertBase = 0;
+
+  for (let m = 0; m < modelCount; m++) {
+    if (posAcc.length / 3 >= MAX_VERTS_TOTAL) break;
+    if (!mustPlace.has(m)) continue;
+    const p = ptrs[m];
+    const tr = T[m];
+    const added = extractOneModel(dv, p, fileLen, posAcc, idxAcc, vertBase, tr.x, tr.y, tr.z, true);
+    if (added > 0) {
+      vertBase += added;
+      if (texAcc) appendModelTexTris(dv, p, fileLen, tr.x, tr.y, tr.z, texAcc, true);
+    }
+  }
+
+  if (posAcc.length < 9 || idxAcc.length < 3) return null;
+
+  const positions = new Float32Array(posAcc);
+  const nIdx = Math.min(idxAcc.length, MAX_INDICES_TOTAL);
+  const indices = new Uint32Array(nIdx);
+  for (let i = 0; i < nIdx; i++) indices[i] = idxAcc[i];
+  reflectNeversoftForThree(positions);
+
+  return {
+    positions,
+    indices,
+    modelCount,
+    multiPartCharacterPreview: false,
+    characterAssembly: true,
+    assemblyRootModelIndex: root,
+  };
+}
+
+/**
  * Skater / prop assets ship many models in one `.psx` (one mesh per skeleton part — see companion `.psh`).
  * They live in separate bone-local spaces; merging them at the origin looks like a shattered mesh.
  * For preview, pick the single part with the most faces (then vertices) so one solid shows.
@@ -693,7 +1087,7 @@ function mergeLargestSinglePart(dv, tableOff, fileLen, table, texAcc) {
   const nIdx = Math.min(idxAcc.length, MAX_INDICES_TOTAL);
   const indices = new Uint32Array(nIdx);
   for (let i = 0; i < nIdx; i++) indices[i] = idxAcc[i];
-  flipNeversoftYForThree(positions, indices);
+  reflectNeversoftForThree(positions);
 
   return {
     positions,
@@ -715,6 +1109,8 @@ function mergeAllModelsAtOriginWithPartHeuristic(dv, tableOff, fileLen, texAcc) 
   const table = readModelTablePtrs(dv, tableOff, fileLen);
   if (!table) return null;
   if (table.modelCount > 1) {
+    const assembled = tryMergeCharacterAssembled(dv, tableOff, fileLen, table, texAcc);
+    if (assembled) return assembled;
     const one = mergeLargestSinglePart(dv, tableOff, fileLen, table, texAcc);
     if (one) return one;
   }
@@ -754,7 +1150,7 @@ function mergeAllModelsAtOrigin(dv, tableOff, fileLen, texAcc) {
   const nIdx = Math.min(idxAcc.length, MAX_INDICES_TOTAL);
   const indices = new Uint32Array(nIdx);
   for (let i = 0; i < nIdx; i++) indices[i] = idxAcc[i];
-  flipNeversoftYForThree(positions, indices);
+  reflectNeversoftForThree(positions);
 
   return { positions, indices, modelCount, multiPartCharacterPreview: false };
 }
@@ -800,9 +1196,29 @@ function mergeModelsViaObjects(dv, tableOff, fileLen, firstObjOff, objCount, tex
   const nIdx = Math.min(idxAcc.length, MAX_INDICES_TOTAL);
   const indices = new Uint32Array(nIdx);
   for (let i = 0; i < nIdx; i++) indices[i] = idxAcc[i];
-  flipNeversoftYForThree(positions, indices);
+  reflectNeversoftForThree(positions);
 
   return { positions, indices, modelCount, multiPartCharacterPreview: false };
+}
+
+/**
+ * Character files sometimes carry an object table whose transforms are all identity placeholders.
+ * In that case the object-instancing path collapses every part to the origin, so prefer socket/plug assembly.
+ * @param {DataView} dv
+ * @param {number} fileLen
+ * @param {number} firstObjOff
+ * @param {number} objCount
+ */
+function hasOnlyIdentityObjectPlacements(dv, fileLen, firstObjOff, objCount) {
+  let sawAny = false;
+  for (let oi = 0; oi < objCount; oi++) {
+    const ob = firstObjOff + oi * OBJECT_STRIDE;
+    const obj = readObject(dv, ob, fileLen);
+    if (!obj) return false;
+    sawAny = true;
+    if (obj.px !== 0 || obj.py !== 0 || obj.pz !== 0) return false;
+  }
+  return sawAny;
 }
 
 /**
@@ -823,9 +1239,10 @@ function attachTexturesIfAny(dv, fileLen, chunkPtr, texAcc, base, externalTextur
     : resolveTextureBankForModel(embedded.texhashList, externalTextureSource);
   const texBank = embeddedBank || externalBank;
   if (!texBank) return base;
-  flipTexturedTrisForThree(texAcc);
   const buf = buildTexturedMeshBuffers(texAcc, texBank);
   if (!buf) return base;
+  // Same final reflection as plain mesh, applied once after UV bake so textures stay aligned with geometry.
+  reflectNeversoftForThree(buf.positions);
   return {
     ...base,
     textured: {
@@ -843,7 +1260,7 @@ function attachTexturesIfAny(dv, fileLen, chunkPtr, texAcc, base, externalTextur
 /**
  * @param {Uint8Array} bytes
  * @param {import("./psx-textures.js").PsxTextureSource | null} [externalTextureSource]
- * @returns {{ positions: Float32Array, indices: Uint32Array, modelCount: number, previewPartIndex?: number, multiPartCharacterPreview?: boolean, textured?: object } | null}
+ * @returns {{ positions: Float32Array, indices: Uint32Array, modelCount: number, previewPartIndex?: number, multiPartCharacterPreview?: boolean, characterAssembly?: boolean, assemblyRootModelIndex?: number, textured?: object } | null}
  */
 export function parsePsxLevelGeometry(bytes, externalTextureSource = null) {
   if (bytes.length < 16) return null;
@@ -866,7 +1283,18 @@ export function parsePsxLevelGeometry(bytes, externalTextureSource = null) {
   const objCount = dv.getUint32(o, true);
   o += 4;
 
-  if (objCount > 0 && objCount <= MAX_OBJECTS && o + objCount * OBJECT_STRIDE + 4 <= fileLen) {
+  const objTableLooksIdentity =
+    objCount > 0 &&
+    objCount <= MAX_OBJECTS &&
+    o + objCount * OBJECT_STRIDE <= fileLen &&
+    hasOnlyIdentityObjectPlacements(dv, fileLen, 8 + 4, objCount);
+
+  if (
+    objCount > 0 &&
+    objCount <= MAX_OBJECTS &&
+    o + objCount * OBJECT_STRIDE + 4 <= fileLen &&
+    !objTableLooksIdentity
+  ) {
     const tableOff = o + objCount * OBJECT_STRIDE;
     texAcc.length = 0;
     const placed = mergeModelsViaObjects(dv, tableOff, fileLen, 8 + 4, objCount, texAcc);

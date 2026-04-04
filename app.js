@@ -9,7 +9,13 @@ import {
   loadFflate,
   FFLATE_MODULE_URL,
 } from "./pkr.js";
-import { parsePsxLevelGeometry } from "./psx-model.js";
+import { parsePrk, hexBytes } from "./prk.js";
+import {
+  parsePsxLevelGeometry,
+  dumpPsxCharacterPadDiagnostics,
+  PSX_CHARACTER_ASSEMBLY_STORAGE_KEY,
+} from "./psx-model.js";
+import { parsePsxExternalTextureSource } from "./psx-textures.js";
 
 /** @type {ArrayBuffer | null} */
 let currentBuffer = null;
@@ -17,6 +23,8 @@ let currentBuffer = null;
 let currentArchive = null;
 /** @type {string} */
 let currentFileName = "";
+/** @type {"archive" | "prk"} */
+let currentLoadKind = "archive";
 let selectedDirIndex = -1;
 let selectedFileIndex = -1;
 
@@ -102,21 +110,40 @@ function getInspectorPanel() {
   return workspaceEl.querySelector(".workspace__inspector");
 }
 const detailEl = $("detail");
+const previewBlock = $("preview-block");
+const previewHomeAnchor = $("preview-home-anchor");
 const previewEl = $("preview");
 const previewHint = $("preview-hint");
 const previewAudioWrap = $("preview-audio-wrap");
 const previewAudio = $("preview-audio");
 const previewVolumeRange = $("preview-volume-range");
 const previewAutoplay = $("preview-autoplay");
+const previewPrkWrap = $("preview-prk-wrap");
+const previewPrkColorMode = /** @type {HTMLSelectElement} */ ($("preview-prk-color-mode"));
+const previewPrkSummary = $("preview-prk-summary");
+const previewPrkGrid = $("preview-prk-grid");
+const previewPrkSelection = $("preview-prk-selection");
+const previewPrkGaps = $("preview-prk-gaps");
 const previewImageWrap = $("preview-image-wrap");
 const previewImage = $("preview-image");
 const previewImageToolbar = $("preview-image-toolbar");
 const previewBmpFit = $("preview-bmp-fit");
+const previewPopoutBtn = /** @type {HTMLButtonElement} */ ($("preview-popout"));
+const previewPopoutLabel = $("preview-popout-label");
 const previewCopyBtn = $("preview-copy");
 const previewPsxWrap = $("preview-psx-wrap");
 const previewPsxCanvas = /** @type {HTMLCanvasElement} */ ($("preview-psx-canvas"));
 const previewPsxDebugMode = /** @type {HTMLSelectElement} */ ($("preview-psx-debug-mode"));
 const previewPsxTextured = /** @type {HTMLInputElement} */ ($("preview-psx-textured"));
+const previewPsxAssemble = /** @type {HTMLInputElement} */ ($("preview-psx-assemble"));
+const previewPsxPadReport = /** @type {HTMLButtonElement} */ ($("preview-psx-pad-report"));
+const previewPsxSourceBtn = /** @type {HTMLButtonElement} */ ($("preview-psx-source-btn"));
+const previewPsxExportTextureBtn = /** @type {HTMLButtonElement} */ ($("preview-psx-export-texture"));
+const previewPsxSourceInput = /** @type {HTMLInputElement} */ ($("preview-psx-source-input"));
+const previewPsxSourceName = $("preview-psx-source-name");
+
+/** Last opened `.psx` entry bytes (for pad diagnostics). */
+let lastPsxPreviewBytes = /** @type {Uint8Array | null} */ (null);
 
 /** @type {string | null} */
 let previewAudioObjectUrl = null;
@@ -124,6 +151,18 @@ let previewAudioObjectUrl = null;
 let previewImageObjectUrl = null;
 /** Text sent to clipboard for text/hex previews (may be full hex for smaller binaries). */
 let previewClipboardText = "";
+/** @type {{ parsed: ReturnType<typeof parsePrk>, colorMode: string, selectedIndex: number } | null} */
+let prkPreviewState = null;
+/** @type {import("./psx-textures.js").PsxTextureSource | null} */
+let externalPsxTextureSource = null;
+let externalPsxTextureSourceName = "";
+/** @type {import("./psx-textures.js").PsxTextureSource | null} */
+let autoPsxTextureSource = null;
+let autoPsxTextureSourceName = "";
+/** @type {import("./psx-textures.js").PsxDecodedTexture[]} */
+let currentPsxExportTextures = [];
+/** @type {Map<string, import("./psx-textures.js").PsxTextureSource | null>} */
+const autoPsxTextureCache = new Map();
 
 const STORAGE_WAV_AUTOPLAY = "pkr-explorer-wav-autoplay";
 const STORAGE_FILE_VIEW = "pkr-explorer-file-view";
@@ -172,8 +211,23 @@ const MAX_FULL_HEX_COPY = 512 * 1024;
 
 /** Skip tile thumbnails above this uncompressed size (decompress + decode cost). */
 const TILE_BMP_THUMB_MAX_BYTES = 8 * 1024 * 1024;
+/** PSX mesh thumbs: parse + headless WebGL (no external texture lib in grid). */
+const TILE_PSX_THUMB_MAX_BYTES = 8 * 1024 * 1024;
+/** Render target pixel size for `.psx` grid thumbnails (displayed via CSS in tile). */
+const PSX_TILE_THUMB_PX = 128;
 
 const THUMB_LOAD_CAP = 5;
+
+/** @type {Promise<typeof import("three")> | null} */
+let threeThumbImportPromise = null;
+
+/** @returns {Promise<typeof import("three")>} */
+function getThreeForThumb() {
+  if (!threeThumbImportPromise) {
+    threeThumbImportPromise = import("https://esm.sh/three@0.161.0");
+  }
+  return threeThumbImportPromise;
+}
 
 /** Blob URLs for BMP tile previews (revoked when the grid is rebuilt). */
 const tileThumbObjectUrls = new Set();
@@ -189,6 +243,9 @@ const statusEl = $("status");
 const fileActions = $("file-actions");
 const btnDownload = $("btn-download");
 const helpDialog = $("help-dialog");
+const previewPopoutDialog = /** @type {HTMLDialogElement} */ ($("preview-popout-dialog"));
+const previewPopoutSlot = $("preview-popout-slot");
+const previewPopoutClose = $("preview-popout-close");
 const btnHelp = $("btn-help");
 const welcomeHelp = $("welcome-help");
 const helpClose = $("help-close");
@@ -199,6 +256,7 @@ const recentClear = $("recent-clear");
 
 const PREVIEW_HEX_MAX = 256;
 const PREVIEW_TEXT_MAX = 8192;
+let previewIsPoppedOut = false;
 
 const nf = new Intl.NumberFormat(undefined);
 
@@ -210,6 +268,45 @@ function formatBytes(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * @param {string} fileName
+ * @param {number} byteLength
+ */
+function createStandalonePrkArchive(fileName, byteLength) {
+  return {
+    format: "thps2",
+    dirs: [
+      {
+        name: "(standalone file)",
+        files: [
+          {
+            name: fileName,
+            crc: null,
+            compression: UNCOMPRESSED,
+            offset: 0,
+            uncompressed_size: byteLength,
+            compressed_size: byteLength,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * @param {number} value
+ */
+function formatHexByte(value) {
+  return `0x${value.toString(16).padStart(2, "0")}`;
+}
+
+/**
+ * @param {number} value
+ */
+function formatHexU32(value) {
+  return `0x${value.toString(16).padStart(8, "0")}`;
 }
 
 /** Lowercase extension including leading dot, or `""` if none. */
@@ -555,6 +652,37 @@ function setStatus(msg) {
   statusEl.textContent = msg;
 }
 
+function updatePreviewPopoutUi() {
+  previewPopoutLabel.textContent = previewIsPoppedOut ? "Dock" : "Pop out";
+  previewPopoutBtn.title = previewIsPoppedOut
+    ? "Return the preview to the sidebar"
+    : "Open the preview in a larger pop-out window";
+}
+
+function dockPreviewBlock() {
+  if (!previewIsPoppedOut) return;
+  previewHomeAnchor.before(previewBlock);
+  previewIsPoppedOut = false;
+  updatePreviewPopoutUi();
+}
+
+function openPreviewPopout() {
+  if (previewIsPoppedOut) return;
+  previewPopoutSlot.appendChild(previewBlock);
+  previewIsPoppedOut = true;
+  updatePreviewPopoutUi();
+  if (!previewPopoutDialog.open) previewPopoutDialog.showModal();
+}
+
+function togglePreviewPopout() {
+  if (previewIsPoppedOut) {
+    if (previewPopoutDialog.open) previewPopoutDialog.close();
+    else dockPreviewBlock();
+    return;
+  }
+  openPreviewPopout();
+}
+
 function openHelp() {
   if (!helpDialog.open) helpDialog.showModal();
 }
@@ -620,6 +748,16 @@ function hideImagePreview() {
   previewImageToolbar.classList.add("is-hidden");
 }
 
+function hidePrkPreview() {
+  prkPreviewState = null;
+  previewPrkWrap.classList.add("is-hidden");
+  previewPrkSummary.textContent = "";
+  previewPrkGrid.replaceChildren();
+  previewPrkGrid.style.removeProperty("--prk-cols");
+  previewPrkSelection.textContent = "Select a cell.";
+  previewPrkGaps.replaceChildren();
+}
+
 /**
  * @typedef {import("three").Object3D} ThreeObject3D
  */
@@ -630,9 +768,18 @@ function hideImagePreview() {
  *   geoms: import("three").BufferGeometry[],
  *   scene: import("three").Scene,
  *   mesh: import("three").Mesh,
- *   mats: { shaded: import("three").Material; wire: import("three").Material; normal: import("three").Material },
+ *   mats: {
+ *     shaded: import("three").Material;
+ *     wire: import("three").Material;
+ *     normal: import("three").Material;
+ *     uvWinding: import("three").Material;
+ *   },
  *   texMaterials: import("three").Material[] | null,
- *   overlayRef: { vertNormHelper: ThreeObject3D | null; edgesLines: import("three").LineSegments | null },
+ *   overlayRef: {
+ *     vertNormHelper: ThreeObject3D | null;
+ *     edgesLines: import("three").LineSegments | null;
+ *     uDirLines: import("three").LineSegments | null;
+ *   },
  *   applyDebugMode: (mode: string) => void,
  *   ro: ResizeObserver,
  * } | null} */
@@ -655,6 +802,12 @@ function disposePsxPreview() {
       overlayRef.edgesLines.material.dispose();
       overlayRef.edgesLines = null;
     }
+    if (overlayRef.uDirLines) {
+      scene.remove(overlayRef.uDirLines);
+      overlayRef.uDirLines.geometry.dispose();
+      overlayRef.uDirLines.material.dispose();
+      overlayRef.uDirLines = null;
+    }
     for (const g of psxPreviewCtx.geoms) g.dispose();
     if (psxPreviewCtx.texMaterials) {
       for (const m of psxPreviewCtx.texMaterials) {
@@ -665,15 +818,158 @@ function disposePsxPreview() {
     psxPreviewCtx.mats.shaded.dispose();
     psxPreviewCtx.mats.wire.dispose();
     psxPreviewCtx.mats.normal.dispose();
+    psxPreviewCtx.mats.uvWinding.dispose();
     psxPreviewCtx.renderer.dispose();
     psxPreviewCtx.ro.disconnect();
     psxPreviewCtx = null;
   }
+  currentPsxExportTextures = [];
+  updatePsxTextureExportState();
   previewPsxWrap.classList.add("is-hidden");
 }
 
 function updateCopyButtonState() {
   previewCopyBtn.disabled = previewClipboardText.length === 0;
+}
+
+function clearAutoPsxTextureSource() {
+  autoPsxTextureSource = null;
+  autoPsxTextureSourceName = "";
+}
+
+function updatePsxExternalSourceLabel() {
+  if (externalPsxTextureSourceName) {
+    previewPsxSourceName.textContent = `Manual: ${externalPsxTextureSourceName}`;
+    return;
+  }
+  if (autoPsxTextureSourceName) {
+    previewPsxSourceName.textContent = `Auto: ${autoPsxTextureSourceName}`;
+    return;
+  }
+  previewPsxSourceName.textContent = "No external texture source";
+}
+
+function updatePsxTextureExportState() {
+  previewPsxExportTextureBtn.disabled = currentPsxExportTextures.length === 0;
+}
+
+function getActivePsxTextureSource() {
+  return externalPsxTextureSource ?? autoPsxTextureSource;
+}
+
+/**
+ * @param {ReturnType<typeof parsePsxLevelGeometry> | null} parsed
+ */
+function setCurrentPsxExportTextures(parsed) {
+  currentPsxExportTextures = [];
+  if (!parsed?.textured) {
+    updatePsxTextureExportState();
+    return;
+  }
+  const seen = new Set();
+  for (const key of parsed.textured.materialKeys) {
+    const tex = parsed.textured.textureBank.get(key);
+    if (!tex || seen.has(tex.texIndex)) continue;
+    seen.add(tex.texIndex);
+    currentPsxExportTextures.push(tex);
+  }
+  updatePsxTextureExportState();
+}
+
+function getCurrentPsxTextureExportFilename() {
+  if (!currentArchive || selectedDirIndex < 0 || selectedFileIndex < 0) return "psx-textures.png";
+  const dir = currentArchive.dirs[selectedDirIndex];
+  const entry = dir?.files[selectedFileIndex];
+  const stem = (entry?.name || "psx-model").replace(/\.[^.]+$/, "");
+  const suffix = currentPsxExportTextures.length === 1 ? "texture" : "textures";
+  return `${downloadBasename(dir?.name || "root", stem)}__${suffix}.png`;
+}
+
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @returns {Promise<Blob>}
+ */
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("PNG export failed"));
+    }, "image/png");
+  });
+}
+
+/**
+ * @param {import("./psx-textures.js").PsxDecodedTexture[]} textures
+ */
+function buildPsxTextureExportCanvas(textures) {
+  if (textures.length === 1) {
+    const tex = textures[0];
+    const canvas = document.createElement("canvas");
+    canvas.width = tex.width;
+    canvas.height = tex.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2D canvas unavailable");
+    ctx.putImageData(new ImageData(tex.rgba, tex.width, tex.height), 0, 0);
+    return canvas;
+  }
+
+  const padding = 8;
+  const maxW = Math.max(...textures.map((tex) => tex.width));
+  const maxH = Math.max(...textures.map((tex) => tex.height));
+  const cols = Math.ceil(Math.sqrt(textures.length));
+  const rows = Math.ceil(textures.length / cols);
+  const cellW = maxW + padding * 2;
+  const cellH = maxH + padding * 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = cols * cellW;
+  canvas.height = rows * cellH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2D canvas unavailable");
+  ctx.imageSmoothingEnabled = false;
+  for (let i = 0; i < textures.length; i++) {
+    const tex = textures[i];
+    const tile = document.createElement("canvas");
+    tile.width = tex.width;
+    tile.height = tex.height;
+    const tileCtx = tile.getContext("2d");
+    if (!tileCtx) throw new Error("2D canvas unavailable");
+    tileCtx.putImageData(new ImageData(tex.rgba, tex.width, tex.height), 0, 0);
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = col * cellW + padding + Math.floor((maxW - tex.width) / 2);
+    const y = row * cellH + padding + Math.floor((maxH - tex.height) / 2);
+    ctx.drawImage(tile, x, y);
+  }
+  return canvas;
+}
+
+async function exportCurrentPsxTextures() {
+  if (currentPsxExportTextures.length === 0) {
+    setStatus("No resolved model textures available to export.");
+    return;
+  }
+  const filename = getCurrentPsxTextureExportFilename();
+  try {
+    setStatus(`Exporting ${filename}…`);
+    const canvas = buildPsxTextureExportCanvas(currentPsxExportTextures);
+    const blob = await canvasToPngBlob(canvas);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus(`Saved ${filename}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setStatus(`Texture export failed: ${msg}`);
+  }
+}
+
+function refreshCurrentSelection() {
+  if (currentArchive && currentBuffer && selectedDirIndex >= 0 && selectedFileIndex >= 0) {
+    void showFileDetail(selectedDirIndex, selectedFileIndex);
+  }
 }
 
 /**
@@ -704,6 +1000,356 @@ function isPshFileName(name) {
   return /\.psh$/i.test(name);
 }
 
+/**
+ * Supports both `SKHAN.PSX` + `SKHAN_L.PSX` and numbered variants like
+ * `SKHAN_2.PSX` + `SKHAN_L2.PSX` + `SKHAN_O2.PSX`.
+ *
+ * @param {string} name
+ * @returns {{ prefix: string, base: string, variant: string, role: "main" | "texture" | "occluded" | "triggers" } | null}
+ */
+function parseLevelBundleName(name) {
+  const texture = name.match(/^(.*)_L(\d*)\.psx$/i);
+  if (texture) {
+    const base = texture[1];
+    const variant = texture[2] || "";
+    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "texture" };
+  }
+
+  const occluded = name.match(/^(.*)_O(\d*)\.psx$/i);
+  if (occluded) {
+    const base = occluded[1];
+    const variant = occluded[2] || "";
+    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "occluded" };
+  }
+
+  const trigger = name.match(/^(.*)_T(\d*)\.trg$/i);
+  if (trigger) {
+    const base = trigger[1];
+    const variant = trigger[2] || "";
+    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "triggers" };
+  }
+
+  const main = name.match(/^(.*?)(?:_(\d+))?\.psx$/i);
+  if (main) {
+    const base = main[1];
+    const variant = main[2] || "";
+    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "main" };
+  }
+  return null;
+}
+
+/**
+ * @param {import("./pkr.js").PkrDir} dir
+ * @param {number | null | undefined} index
+ */
+function getDirEntryAt(dir, index) {
+  if (index == null || index < 0 || index >= dir.files.length) return null;
+  return { index, entry: dir.files[index] };
+}
+
+/**
+ * @param {import("./pkr.js").PkrDir} dir
+ * @param {number} fi
+ */
+function getLevelBundleForEntry(dir, fi) {
+  const current = dir.files[fi];
+  if (!current) return null;
+  const parsed = parseLevelBundleName(current.name);
+  if (!parsed) return null;
+
+  const byLower = new Map(dir.files.map((entry, index) => [entry.name.toLowerCase(), index]));
+  const variantSuffix = parsed.variant ? `_${parsed.variant}` : "";
+  const textureVariantSuffix = parsed.variant || "";
+  const mainIndex = byLower.get(`${parsed.base}${variantSuffix}.psx`.toLowerCase()) ?? null;
+  const textureIndex =
+    byLower.get(`${parsed.base}_l${textureVariantSuffix}.psx`.toLowerCase()) ?? null;
+  const occludedIndex =
+    byLower.get(`${parsed.base}_o${textureVariantSuffix}.psx`.toLowerCase()) ?? null;
+  const triggerIndex =
+    byLower.get(`${parsed.base}_t${textureVariantSuffix}.trg`.toLowerCase()) ??
+    byLower.get(`${parsed.base}_t.trg`.toLowerCase()) ??
+    null;
+  const hasCompanion =
+    mainIndex != null || textureIndex != null || occludedIndex != null || triggerIndex != null;
+  if (!hasCompanion) return null;
+
+  return {
+    prefix: parsed.prefix,
+    role: parsed.role,
+    main: getDirEntryAt(dir, mainIndex),
+    texture: getDirEntryAt(dir, textureIndex),
+    occluded: getDirEntryAt(dir, occludedIndex),
+    triggers: getDirEntryAt(dir, triggerIndex),
+  };
+}
+
+/**
+ * @param {number} di
+ * @param {number} fi
+ */
+async function resolveAutoPsxTextureSource(di, fi) {
+  clearAutoPsxTextureSource();
+  if (!currentArchive || !currentBuffer) {
+    updatePsxExternalSourceLabel();
+    return null;
+  }
+  const dir = currentArchive.dirs[di];
+  const bundle = dir ? getLevelBundleForEntry(dir, fi) : null;
+  if (!bundle || !bundle.texture || bundle.role === "texture") {
+    updatePsxExternalSourceLabel();
+    return bundle;
+  }
+
+  const cacheKey = `${di}:${bundle.texture.index}:${bundle.texture.entry.offset}:${bundle.texture.entry.uncompressed_size}`;
+  let parsed = autoPsxTextureCache.get(cacheKey);
+  if (parsed === undefined) {
+    try {
+      const bytes = await extractEntry(currentBuffer, bundle.texture.entry);
+      parsed = parsePsxExternalTextureSource(bytes);
+    } catch {
+      parsed = null;
+    }
+    autoPsxTextureCache.set(cacheKey, parsed ?? null);
+  }
+  if (parsed) {
+    autoPsxTextureSource = parsed;
+    autoPsxTextureSourceName = `${dir.name}/${bundle.texture.entry.name}`;
+  }
+  updatePsxExternalSourceLabel();
+  return bundle;
+}
+
+/**
+ * @param {ReturnType<typeof parsePrk>} parsed
+ */
+function formatPrkSummaryText(parsed) {
+  const namedGaps =
+    parsed.namedGaps.length > 0 ? parsed.namedGaps.map((gap) => gap.name).join(", ") : "(none)";
+  const firstHighscore = parsed.highscores.length > 0 ? hexBytes(parsed.highscores[0]) : "(none)";
+  return [
+    `theme: ${parsed.header.theme} (${parsed.header.width}x${parsed.header.height})`,
+    `sizeIdx: ${parsed.header.sizeIdx}`,
+    `themeIdx: ${parsed.header.themeIdx}`,
+    `unk1: ${formatHexU32(parsed.header.unk1)}`,
+    `usedCells: ${parsed.usedCellCount}/${parsed.cells.length}`,
+    `namedGaps: ${parsed.namedGaps.length}/${parsed.gaps.length}`,
+    `gapNames: ${namedGaps}`,
+    `highscore[0]: ${firstHighscore}`,
+    `trailing: ${parsed.trailing.length} bytes`,
+  ].join("\n");
+}
+
+/**
+ * @param {ReturnType<typeof parsePrk>["cells"][number]} cell
+ * @param {string} mode
+ */
+function getPrkCellFieldValue(cell, mode) {
+  switch (mode) {
+    case "slot0":
+      return cell.slot0;
+    case "slot1":
+      return cell.slot1;
+    case "slot2":
+      return cell.slot2;
+    case "slot3":
+      return cell.slot3;
+    case "variant":
+      return cell.variant;
+    case "flags":
+      return cell.flags;
+    case "indexByte":
+      return cell.indexByte;
+    default:
+      return cell.slot3;
+  }
+}
+
+/**
+ * @param {ReturnType<typeof parsePrk>["cells"][number]} cell
+ * @param {string} mode
+ */
+function getPrkCellColor(cell, mode) {
+  const value = getPrkCellFieldValue(cell, mode);
+  if (value === 0xff) return "#252932";
+  const hue = Math.round((value / 255) * 320);
+  const saturation = cell.isEmpty ? 20 : 58;
+  const lightness = cell.isEmpty ? 18 : 48;
+  return `hsl(${hue}deg ${saturation}% ${lightness}%)`;
+}
+
+function renderPrkSelection() {
+  if (!prkPreviewState) return;
+  const { parsed, selectedIndex } = prkPreviewState;
+  const cell = parsed.cells[selectedIndex];
+  if (!cell) {
+    previewPrkSelection.textContent = "Select a cell.";
+    return;
+  }
+  previewPrkSelection.textContent = [
+    `x=${cell.x}  y=${cell.y}  index=${cell.index}`,
+    `slot0   ${formatHexByte(cell.slot0)}`,
+    `slot1   ${formatHexByte(cell.slot1)}`,
+    `slot2   ${formatHexByte(cell.slot2)}`,
+    `slot3   ${formatHexByte(cell.slot3)}`,
+    `variant ${formatHexByte(cell.variant)}`,
+    `pad     ${formatHexByte(cell.pad)}`,
+    `flags   ${formatHexByte(cell.flags)}`,
+    `index   ${formatHexByte(cell.indexByte)}`,
+    `raw     ${hexBytes(cell.raw)}`,
+  ].join("\n");
+}
+
+/**
+ * @param {ReturnType<typeof parsePrk>} parsed
+ */
+function renderPrkGapList(parsed) {
+  previewPrkGaps.replaceChildren();
+  if (parsed.namedGaps.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "preview-prk-gap preview-prk-gap--empty";
+    empty.textContent = "No named gaps in this save.";
+    previewPrkGaps.appendChild(empty);
+    return;
+  }
+  for (const gap of parsed.namedGaps) {
+    const item = document.createElement("div");
+    item.className = "preview-prk-gap";
+    const name = document.createElement("span");
+    name.className = "preview-prk-gap__name";
+    name.textContent = gap.name;
+    const meta = document.createElement("span");
+    meta.className = "preview-prk-gap__meta";
+    meta.textContent = `${hexBytes(gap.raw8)} | ${hexBytes(gap.info)}`;
+    item.append(name, meta);
+    previewPrkGaps.appendChild(item);
+  }
+}
+
+function renderPrkGrid() {
+  if (!prkPreviewState) return;
+  const { parsed, colorMode, selectedIndex } = prkPreviewState;
+  previewPrkGrid.replaceChildren();
+  previewPrkGrid.style.setProperty("--prk-cols", String(parsed.width));
+  const sizePx = parsed.width >= 60 ? 12 : parsed.width >= 30 ? 14 : 18;
+  previewPrkGrid.style.setProperty("--prk-cell-size", `${sizePx}px`);
+  previewPrkSummary.textContent =
+    `${parsed.header.theme} · ${parsed.width} x ${parsed.height} · ${nf.format(parsed.usedCellCount)} used cells`;
+
+  for (const cell of parsed.cells) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "preview-prk-cell";
+    if (cell.index === selectedIndex) button.classList.add("is-selected");
+    button.style.background = getPrkCellColor(cell, colorMode);
+    button.title =
+      `(${cell.x}, ${cell.y}) ${colorMode}=${formatHexByte(getPrkCellFieldValue(cell, colorMode))}\n` +
+      `${hexBytes(cell.raw)}`;
+    button.setAttribute("aria-label", `PRK cell ${cell.x}, ${cell.y}`);
+    button.addEventListener("click", () => {
+      if (!prkPreviewState) return;
+      prkPreviewState.selectedIndex = cell.index;
+      renderPrkGrid();
+      renderPrkSelection();
+    });
+    previewPrkGrid.appendChild(button);
+  }
+}
+
+/**
+ * @param {ReturnType<typeof parsePrk>} parsed
+ */
+function showPrkPreview(parsed) {
+  disposePsxPreview();
+  hideAudioPreview();
+  hideImagePreview();
+  hidePrkPreview();
+  previewClipboardText = formatPrkSummaryText(parsed);
+  previewEl.classList.add("is-hidden");
+  previewEl.textContent = "";
+  previewEl.classList.remove("is-idle");
+  previewHint.hidden = false;
+  previewHint.textContent =
+    "PRK grid inspector — colors show the selected raw byte field; click a cell to inspect its 8-byte record.";
+  previewPrkWrap.classList.remove("is-hidden");
+  prkPreviewState = {
+    parsed,
+    colorMode: previewPrkColorMode.value || "slot3",
+    selectedIndex: parsed.cells.find((cell) => !cell.isEmpty)?.index ?? 0,
+  };
+  renderPrkGapList(parsed);
+  renderPrkGrid();
+  renderPrkSelection();
+  updateCopyButtonState();
+}
+
+/**
+ * @param {"main" | "texture" | "occluded" | "triggers"} role
+ */
+function describeLevelBundleRole(role) {
+  switch (role) {
+    case "main":
+      return "Main geometry / collision";
+    case "texture":
+      return "Texture library";
+    case "occluded":
+      return "Alternate / occluded mesh";
+    case "triggers":
+      return "Triggers / scripts metadata";
+    default:
+      return role;
+  }
+}
+
+/**
+ * @param {HTMLElement} parent
+ * @param {number} di
+ * @param {{ prefix: string, role: "main" | "texture" | "occluded" | "triggers", main: { index: number, entry: import("./pkr.js").PkrFileEntry } | null, texture: { index: number, entry: import("./pkr.js").PkrFileEntry } | null, occluded: { index: number, entry: import("./pkr.js").PkrFileEntry } | null, triggers: { index: number, entry: import("./pkr.js").PkrFileEntry } | null }} bundle
+ */
+function appendLevelBundleDetail(parent, di, bundle) {
+  const card = document.createElement("div");
+  card.className = "detail-card detail-card--stacked";
+  const title = document.createElement("p");
+  title.className = "detail-section-title";
+  title.textContent = "Level bundle";
+  const body = document.createElement("p");
+  body.className = "detail-support";
+  const autoText = bundle.texture
+    ? externalPsxTextureSource
+      ? `Manual texture source overrides ${bundle.texture.entry.name}.`
+      : autoPsxTextureSource
+        ? `Preview auto-uses ${bundle.texture.entry.name} for textures.`
+        : `${bundle.texture.entry.name} was found but did not parse as a texture source.`
+    : "No sibling texture library was found.";
+  body.innerHTML =
+    `Prefix <code>${escapeHtml(bundle.prefix)}</code> · currently viewing <strong>${escapeHtml(describeLevelBundleRole(bundle.role))}</strong>.<br>${escapeHtml(autoText)}`;
+
+  const actions = document.createElement("div");
+  actions.className = "detail-action-row";
+  /** @type {Array<{ label: string, item: { index: number, entry: import("./pkr.js").PkrFileEntry } | null }>} */
+  const items = [
+    { label: "Main .PSX", item: bundle.main },
+    { label: "Textures", item: bundle.texture },
+    { label: "Alt mesh", item: bundle.occluded },
+    { label: "Triggers", item: bundle.triggers },
+  ];
+  for (const { label, item } of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn--ghost detail-action-btn";
+    if (!item) {
+      btn.disabled = true;
+      btn.textContent = `${label}: missing`;
+    } else {
+      btn.textContent = `${label}: ${item.entry.name}`;
+      btn.title = item.entry.name;
+      btn.addEventListener("click", () => selectFileEntry(di, item.index));
+    }
+    actions.appendChild(btn);
+  }
+  card.append(title, body, actions);
+  parent.appendChild(card);
+}
+
 function revokeAllTileThumbUrls() {
   for (const u of tileThumbObjectUrls) URL.revokeObjectURL(u);
   tileThumbObjectUrls.clear();
@@ -723,7 +1369,9 @@ function ensureTileThumbObserver() {
         const di = Number(tile.dataset.dirIndex);
         const fi = Number(tile.dataset.fileIndex);
         void withThumbConcurrency(async () => {
-          await loadBmpTileThumb(tile, img, di, fi);
+          const kind = img.dataset.thumbKind;
+          if (kind === "psx") await loadPsxTileThumb(tile, img, di, fi);
+          else await loadBmpTileThumb(tile, img, di, fi);
         });
       }
     },
@@ -783,11 +1431,245 @@ async function loadBmpTileThumb(tile, imgEl, di, fi) {
 }
 
 /**
+ * Rebuild tile grid for the open folder so `.psx` thumbnails pick up texture source / mode changes.
+ */
+function refreshPsxTileThumbsGrid() {
+  if (fileViewMode !== "tiles" || !currentArchive || selectedDirIndex < 0) return;
+  renderFilesTable(selectedDirIndex, { preserveFilter: true });
+  highlightSelection(selectedDirIndex, selectedFileIndex);
+}
+
+/**
+ * Headless render of merged PSX mesh → PNG object URL (transparent background).
+ * Uses embedded or external texture bank like the main preview when “Textured” mode is on.
+ * @param {Uint8Array} data
+ * @returns {Promise<string | null>}
+ */
+async function renderPsxThumbObjectUrl(data) {
+  const parsed = parsePsxLevelGeometry(data, getActivePsxTextureSource());
+  if (!parsed || parsed.positions.length < 9 || parsed.indices.length < 3) return null;
+
+  let THREE;
+  try {
+    THREE = await getThreeForThumb();
+  } catch {
+    return null;
+  }
+
+  const hasTextured =
+    parsed.textured &&
+    parsed.textured.positions.length >= 9 &&
+    parsed.textured.indices.length >= 3;
+
+  let wantTextured = hasTextured;
+  try {
+    wantTextured = hasTextured && localStorage.getItem(STORAGE_PSX_SURFACE_MODE) !== "untextured";
+  } catch {
+    /* ignore */
+  }
+
+  /** @param {Float32Array} positions @param {Uint32Array} indices @param {Float32Array | null} uvs @param {Array<{ start: number, count: number, materialIndex: number }> | null} groups */
+  const buildMeshGeometry = (positions, indices, uvs, groups) => {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    if (uvs) geom.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    let maxIdx = 0;
+    for (let i = 0; i < indices.length; i++) {
+      const v = indices[i];
+      if (v > maxIdx) maxIdx = v;
+    }
+    if (maxIdx > 65535) {
+      geom.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
+    } else {
+      const i16 = new Uint16Array(indices.length);
+      i16.set(indices);
+      geom.setIndex(new THREE.Uint16BufferAttribute(i16, 1));
+    }
+    if (groups) {
+      for (const g of groups) {
+        geom.addGroup(g.start, g.count, g.materialIndex);
+      }
+    }
+    geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    if (bb) {
+      const c = new THREE.Vector3();
+      bb.getCenter(c);
+      const size = new THREE.Vector3();
+      bb.getSize(size);
+      geom.translate(-c.x, -c.y, -c.z);
+      const mx = Math.max(size.x, size.y, size.z, 1e-6);
+      const sc = 1 / mx;
+      geom.scale(sc, sc, sc);
+    }
+    geom.computeVertexNormals();
+    return geom;
+  };
+
+  /** @type {import("three").BufferGeometry} */
+  let geom;
+  /** @type {import("three").MeshStandardMaterial[] | null} */
+  let texMaterials = null;
+  /** @type {import("three").MeshStandardMaterial | null} */
+  let plainMaterial = null;
+
+  if (wantTextured && hasTextured) {
+    const t = parsed.textured;
+    geom = buildMeshGeometry(t.positions, t.indices, t.uvs, t.groups);
+    texMaterials = [];
+    for (let mi = 0; mi < t.materialKeys.length; mi++) {
+      const key = t.materialKeys[mi];
+      const entry = t.textureBank.get(key);
+      /** @type {import("three").Texture | null} */
+      let map = null;
+      if (entry) {
+        const dt = new THREE.DataTexture(
+          entry.rgba,
+          entry.width,
+          entry.height,
+          THREE.RGBAFormat
+        );
+        dt.generateMipmaps = false;
+        dt.minFilter = THREE.NearestFilter;
+        dt.magFilter = THREE.NearestFilter;
+        dt.wrapS = THREE.ClampToEdgeWrapping;
+        dt.wrapT = THREE.ClampToEdgeWrapping;
+        // false: first RGBA row → GL v≈0; psx-model.js uses vf=vb/h (boundary UVs, no +0.5).
+        dt.flipY = false;
+        dt.needsUpdate = true;
+        if ("colorSpace" in dt) dt.colorSpace = THREE.SRGBColorSpace;
+        map = dt;
+      }
+      texMaterials.push(
+        new THREE.MeshStandardMaterial({
+          map,
+          color: map ? 0xffffff : 0x8fa8c8,
+          metalness: 0.05,
+          roughness: 0.85,
+          side: THREE.DoubleSide,
+          flatShading: true,
+          emissive: map ? 0x000000 : 0x1a2230,
+          emissiveIntensity: map ? 0 : 0.18,
+          transparent: !!map,
+          alphaTest: map ? 0.5 : 0,
+          depthWrite: true,
+        })
+      );
+    }
+  } else {
+    geom = buildMeshGeometry(parsed.positions, parsed.indices, null, null);
+    plainMaterial = new THREE.MeshStandardMaterial({
+      color: 0x8fa8c8,
+      flatShading: true,
+      metalness: 0.05,
+      roughness: 0.85,
+      side: THREE.DoubleSide,
+      emissive: 0x1a2230,
+      emissiveIntensity: 0.22,
+    });
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = PSX_TILE_THUMB_PX;
+  canvas.height = PSX_TILE_THUMB_PX;
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    alpha: true,
+    antialias: false,
+    powerPreference: "low-power",
+  });
+  renderer.setSize(PSX_TILE_THUMB_PX, PSX_TILE_THUMB_PX, false);
+  renderer.setPixelRatio(1);
+  renderer.setClearColor(0x000000, 0);
+
+  const hasTexMaterials = !!texMaterials && texMaterials.length > 0;
+  const meshMat = hasTexMaterials
+    ? texMaterials
+    : /** @type {import("three").Material} */ (plainMaterial);
+  const mesh = new THREE.Mesh(geom, meshMat);
+  const scene = new THREE.Scene();
+  scene.add(mesh);
+  const amb = new THREE.AmbientLight(0xffffff, 0.55);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(0.45, 1, 0.35);
+  scene.add(amb, dir);
+
+  geom.computeBoundingSphere();
+  const r = geom.boundingSphere?.radius ?? 0.7;
+  const dist = r * 2.35;
+  const cam = new THREE.PerspectiveCamera(40, 1, 0.06, 48);
+  cam.position.set(dist * 0.75, dist * 0.52, dist * 0.75);
+  cam.lookAt(0, 0, 0);
+
+  renderer.render(scene, cam);
+
+  /** @type {string | null} */
+  const url = await new Promise((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) resolve(null);
+        else resolve(URL.createObjectURL(blob));
+      },
+      "image/png",
+      0.93
+    );
+  });
+
+  geom.dispose();
+  if (hasTexMaterials && texMaterials) {
+    for (const m of texMaterials) {
+      if ("map" in m && m.map) m.map.dispose();
+      m.dispose();
+    }
+  } else if (plainMaterial) {
+    plainMaterial.dispose();
+  }
+  renderer.dispose();
+  return url;
+}
+
+/**
+ * @param {HTMLElement} tile
+ * @param {HTMLImageElement} imgEl
+ * @param {number} di
+ * @param {number} fi
+ */
+async function loadPsxTileThumb(tile, imgEl, di, fi) {
+  if (!currentBuffer || !currentArchive) return;
+  const entry = currentArchive.dirs[di]?.files[fi];
+  if (!entry) return;
+  try {
+    const data = await extractEntry(currentBuffer, entry);
+    if (
+      !tile.isConnected ||
+      Number(tile.dataset.dirIndex) !== di ||
+      Number(tile.dataset.fileIndex) !== fi
+    ) {
+      return;
+    }
+    const url = await renderPsxThumbObjectUrl(data);
+    if (!url) {
+      imgEl.closest(".file-tile__thumb-wrap")?.remove();
+      tile.classList.remove("file-tile--with-thumb");
+      return;
+    }
+    tileThumbObjectUrls.add(url);
+    imgEl.src = url;
+    imgEl.removeAttribute("data-pending");
+  } catch {
+    imgEl.closest(".file-tile__thumb-wrap")?.remove();
+    tile.classList.remove("file-tile--with-thumb");
+  }
+}
+
+/**
  * @param {Uint8Array} data
  */
 function showBmpPreview(data) {
   disposePsxPreview();
   hideAudioPreview();
+  hidePrkPreview();
   hideImagePreview();
   previewClipboardText = "";
 
@@ -845,6 +1727,7 @@ function wavPreviewHintBase() {
 function showWavPreview(data) {
   disposePsxPreview();
   hideAudioPreview();
+  hidePrkPreview();
   hideImagePreview();
   previewClipboardText = "";
   previewAudioObjectUrl = URL.createObjectURL(new Blob([data], { type: "audio/wav" }));
@@ -873,13 +1756,16 @@ function showWavPreview(data) {
  * @returns {Promise<boolean>} true if WebGL preview started
  */
 async function showPsxPreview(data) {
+  lastPsxPreviewBytes = data;
   disposePsxPreview();
   hideAudioPreview();
+  hidePrkPreview();
   hideImagePreview();
   previewClipboardText = "";
 
-  const parsed = parsePsxLevelGeometry(data);
+  const parsed = parsePsxLevelGeometry(data, getActivePsxTextureSource());
   if (!parsed) return false;
+  setCurrentPsxExportTextures(parsed);
 
   let THREE;
   /** @type {new (cam: import("three").PerspectiveCamera, el: HTMLElement) => { update: () => void; dispose: () => void }} */
@@ -946,13 +1832,172 @@ async function showPsxPreview(data) {
     return geom;
   };
 
+  /**
+   * Colors each triangle by the sign of its UV area in the current index order.
+   * Green = positive winding, red = negative winding, yellow = degenerate UVs.
+   * @param {Float32Array} positions
+   * @param {Uint32Array} indices
+   * @param {Float32Array | null} uvs
+   */
+  const buildUvWindingDebugGeometry = (positions, indices, uvs) => {
+    if (!uvs) return null;
+    /** @type {number[]} */
+    const pos = [];
+    /** @type {number[]} */
+    const colors = [];
+    const stats = { positive: 0, negative: 0, degenerate: 0 };
+    const pushVertex = (vi, r, g, b) => {
+      const po = vi * 3;
+      pos.push(positions[po], positions[po + 1], positions[po + 2]);
+      colors.push(r, g, b);
+    };
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const ia = indices[i];
+      const ib = indices[i + 1];
+      const ic = indices[i + 2];
+      const ua = ia * 2;
+      const ub = ib * 2;
+      const uc = ic * 2;
+      const du1 = uvs[ub] - uvs[ua];
+      const dv1 = uvs[ub + 1] - uvs[ua + 1];
+      const du2 = uvs[uc] - uvs[ua];
+      const dv2 = uvs[uc + 1] - uvs[ua + 1];
+      const uvArea2 = du1 * dv2 - dv1 * du2;
+      let r = 1;
+      let g = 0.2;
+      let b = 0.2;
+      if (Math.abs(uvArea2) < 1e-8) {
+        stats.degenerate++;
+        r = 1;
+        g = 0.85;
+        b = 0.2;
+      } else if (uvArea2 > 0) {
+        stats.positive++;
+        r = 0.2;
+        g = 0.95;
+        b = 0.35;
+      } else {
+        stats.negative++;
+        r = 1;
+        g = 0.2;
+        b = 0.2;
+      }
+      pushVertex(ia, r, g, b);
+      pushVertex(ib, r, g, b);
+      pushVertex(ic, r, g, b);
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    if (bb) {
+      const c = new THREE.Vector3();
+      bb.getCenter(c);
+      const size = new THREE.Vector3();
+      bb.getSize(size);
+      geom.translate(-c.x, -c.y, -c.z);
+      const mx = Math.max(size.x, size.y, size.z, 1e-6);
+      const sc = 1 / mx;
+      geom.scale(sc, sc, sc);
+    }
+    geom.computeVertexNormals();
+    return { geom, stats };
+  };
+
+  /**
+   * Builds short line segments showing the direction of increasing U on each triangle.
+   * Cyan = valid +U direction. Yellow = degenerate UVs / no stable tangent.
+   * @param {import("three").BufferGeometry | null} geom
+   */
+  const buildUvDirectionLines = (geom) => {
+    if (!geom) return null;
+    const posAttr = geom.getAttribute("position");
+    const uvAttr = geom.getAttribute("uv");
+    const indexAttr = geom.getIndex();
+    if (!posAttr || !uvAttr || !indexAttr) return null;
+    /** @type {number[]} */
+    const pos = [];
+    /** @type {number[]} */
+    const colors = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const ab = new THREE.Vector3();
+    const ac = new THREE.Vector3();
+    const tangent = new THREE.Vector3();
+    const centroid = new THREE.Vector3();
+    const tip = new THREE.Vector3();
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i + 2 < indexAttr.count; i += 3) {
+      const ia = indexAttr.getX(i);
+      const ib = indexAttr.getX(i + 1);
+      const ic = indexAttr.getX(i + 2);
+      a.fromBufferAttribute(posAttr, ia);
+      b.fromBufferAttribute(posAttr, ib);
+      c.fromBufferAttribute(posAttr, ic);
+      const ua = uvAttr.getX(ia);
+      const va = uvAttr.getY(ia);
+      const ub = uvAttr.getX(ib);
+      const vb = uvAttr.getY(ib);
+      const uc = uvAttr.getX(ic);
+      const vc = uvAttr.getY(ic);
+      const du1 = ub - ua;
+      const dv1 = vb - va;
+      const du2 = uc - ua;
+      const dv2 = vc - va;
+      const denom = du1 * dv2 - du2 * dv1;
+      let cr = 0.2;
+      let cg = 0.95;
+      let cb = 1.0;
+      centroid.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+      if (Math.abs(denom) < 1e-8) {
+        tangent.set(0.04, 0, 0);
+        cr = 1.0;
+        cg = 0.85;
+        cb = 0.2;
+      } else {
+        ab.copy(b).sub(a);
+        ac.copy(c).sub(a);
+        tangent.copy(ab).multiplyScalar(dv2).sub(tmp.copy(ac).multiplyScalar(dv1)).divideScalar(denom);
+        if (tangent.lengthSq() < 1e-10) {
+          tangent.set(0.04, 0, 0);
+          cr = 1.0;
+          cg = 0.85;
+          cb = 0.2;
+        } else {
+          tangent.normalize().multiplyScalar(0.06);
+        }
+      }
+      tip.copy(centroid).add(tangent);
+      pos.push(centroid.x, centroid.y, centroid.z, tip.x, tip.y, tip.z);
+      colors.push(cr, cg, cb, cr, cg, cb);
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    out.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    return out;
+  };
+
   const plainGeom = buildMeshGeometry(parsed.positions, parsed.indices, null, null);
   /** @type {import("three").BufferGeometry | null} */
   let texturedGeom = null;
+  /** @type {import("three").BufferGeometry | null} */
+  let uvWindingGeom = null;
+  /** @type {import("three").BufferGeometry | null} */
+  let uDirLinesGeom = null;
+  /** @type {{ positive: number, negative: number, degenerate: number } | null} */
+  let uvWindingStats = null;
 
   if (hasTextured) {
     const t = parsed.textured;
     texturedGeom = buildMeshGeometry(t.positions, t.indices, t.uvs, t.groups);
+    const uvDebug = buildUvWindingDebugGeometry(t.positions, t.indices, t.uvs);
+    if (uvDebug) {
+      uvWindingGeom = uvDebug.geom;
+      uvWindingStats = uvDebug.stats;
+    }
+    uDirLinesGeom = buildUvDirectionLines(texturedGeom);
     texMaterials = [];
     for (let mi = 0; mi < t.materialKeys.length; mi++) {
       const key = t.materialKeys[mi];
@@ -972,6 +2017,7 @@ async function showPsxPreview(data) {
         dt.magFilter = THREE.NearestFilter;
         dt.wrapS = THREE.ClampToEdgeWrapping;
         dt.wrapT = THREE.ClampToEdgeWrapping;
+        // Paired with psx-model.js: vf=vb/h, flipY=false.
         dt.flipY = false;
         dt.needsUpdate = true;
         if ("colorSpace" in dt) dt.colorSpace = THREE.SRGBColorSpace;
@@ -987,6 +2033,9 @@ async function showPsxPreview(data) {
           flatShading: true,
           emissive: map ? 0x000000 : 0x1a2230,
           emissiveIntensity: map ? 0 : 0.18,
+          transparent: !!map,
+          alphaTest: map ? 0.5 : 0,
+          depthWrite: true,
         })
       );
     }
@@ -1009,8 +2058,18 @@ async function showPsxPreview(data) {
     side: THREE.DoubleSide,
     flatShading: true,
   });
-  const mats = { shaded: matShaded, wire: matWire, normal: matNormal };
+  const matUvWinding = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+  });
+  const mats = {
+    shaded: matShaded,
+    wire: matWire,
+    normal: matNormal,
+    uvWinding: matUvWinding,
+  };
   let texturedSurface = hasTextured;
+  let currentDebugMode = "shaded";
   try {
     texturedSurface = hasTextured && localStorage.getItem(STORAGE_PSX_SURFACE_MODE) !== "untextured";
   } catch {
@@ -1020,8 +2079,16 @@ async function showPsxPreview(data) {
   previewPsxTextured.disabled = !hasTextured;
   previewPsxTextured.parentElement?.classList.toggle("is-disabled", !hasTextured);
 
+  try {
+    previewPsxAssemble.checked =
+      localStorage.getItem(PSX_CHARACTER_ASSEMBLY_STORAGE_KEY) === "1";
+  } catch {
+    previewPsxAssemble.checked = false;
+  }
+
   const activeGeom = () => (texturedSurface && texturedGeom ? texturedGeom : plainGeom);
-  const mesh = new THREE.Mesh(activeGeom(), texturedSurface && texMaterials ? texMaterials : matShaded);
+  const hasTexMaterials = !!texMaterials && texMaterials.length > 0;
+  const mesh = new THREE.Mesh(activeGeom(), texturedSurface && hasTexMaterials ? texMaterials : matShaded);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x12151c);
@@ -1041,6 +2108,8 @@ async function showPsxPreview(data) {
     vertNormHelper: null,
     /** @type {import("three").LineSegments | null} */
     edgesLines: null,
+    /** @type {import("three").LineSegments | null} */
+    uDirLines: null,
   };
 
   function clearPsxDebugOverlays() {
@@ -1056,6 +2125,12 @@ async function showPsxPreview(data) {
       overlayRef.edgesLines.material.dispose();
       overlayRef.edgesLines = null;
     }
+    if (overlayRef.uDirLines) {
+      scene.remove(overlayRef.uDirLines);
+      overlayRef.uDirLines.geometry.dispose();
+      overlayRef.uDirLines.material.dispose();
+      overlayRef.uDirLines = null;
+    }
   }
 
   const plainVertCount = parsed.positions.length / 3;
@@ -1068,6 +2143,14 @@ async function showPsxPreview(data) {
     const triCount = texturedSurface && hasTextured ? texturedTriCount : plainTriCount;
     let hint = `PSX mesh — ${nf.format(parsed.modelCount)} model part(s), ${nf.format(vertCount)} vertices, ~${nf.format(triCount)} tris`;
     hint += hintBase;
+    if (currentDebugMode === "uv-winding" && uvWindingStats) {
+      hint += ` UV winding debug: green=${nf.format(uvWindingStats.positive)}, red=${nf.format(
+        uvWindingStats.negative
+      )}, yellow=${nf.format(uvWindingStats.degenerate)} tris.`;
+    }
+    if (currentDebugMode === "u-dir") {
+      hint += " U direction debug: cyan lines show increasing U per triangle; yellow marks degenerate UVs.";
+    }
     hint += hasTextured
       ? texturedSurface
         ? " Textured surface view."
@@ -1078,15 +2161,37 @@ async function showPsxPreview(data) {
 
   function applyDebugMode(mode) {
     clearPsxDebugOverlays();
+    currentDebugMode = mode;
     texturedSurface = hasTextured && previewPsxTextured.checked;
     mesh.geometry = activeGeom();
     mesh.visible = true;
     syncPsxHint();
-    if (texturedSurface && texMaterials && mode === "shaded") {
+    if (texturedSurface && hasTexMaterials && texMaterials && mode === "shaded") {
       mesh.material = texMaterials;
       return;
     }
     switch (mode) {
+      case "uv-winding":
+        mesh.geometry = uvWindingGeom ?? activeGeom();
+        mesh.material = uvWindingGeom
+          ? mats.uvWinding
+          : texturedSurface && hasTexMaterials && texMaterials
+            ? texMaterials
+            : mats.shaded;
+        break;
+      case "u-dir":
+        mesh.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
+        if (uDirLinesGeom) {
+          overlayRef.uDirLines = new THREE.LineSegments(
+            uDirLinesGeom.clone(),
+            new THREE.LineBasicMaterial({
+              vertexColors: true,
+              toneMapped: false,
+            })
+          );
+          scene.add(overlayRef.uDirLines);
+        }
+        break;
       case "wireframe":
         mesh.material = mats.wire;
         break;
@@ -1109,7 +2214,7 @@ async function showPsxPreview(data) {
         break;
       }
       default:
-        mesh.material = texturedSurface && texMaterials ? texMaterials : mats.shaded;
+        mesh.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
     }
   }
 
@@ -1144,10 +2249,28 @@ async function showPsxPreview(data) {
   previewEl.classList.remove("is-idle");
   previewHint.hidden = false;
 
+  let assemblyWanted = false;
+  try {
+    assemblyWanted = localStorage.getItem(PSX_CHARACTER_ASSEMBLY_STORAGE_KEY) === "1";
+  } catch {
+    assemblyWanted = false;
+  }
+
   let hint = "";
-  hint += hasTextured
-    ? ` (embedded 4/8bpp textures + UVs; THPS2X / odd palettes may be incomplete).`
-    : ` (no embedded texture bank decoded for this path).`;
+    hint += hasTextured
+      ? parsed.textured?.textureSource === "external"
+        ? ` (external texture .psx resolved via texhash lookup).`
+        : ` (embedded 4/8bpp textures + UVs; THPS2X / odd palettes may be incomplete).`
+      : externalPsxTextureSource
+        ? ` (no textures resolved from the current mesh + external texture source).`
+        : ` (no texture source resolved for this path).`;
+  if (parsed.characterAssembly) {
+    hint += ` Character bind pose: parts merged using pad=1 sockets / pad=2 plug keys (global ordinal table).`;
+  } else if (assemblyWanted && parsed.modelCount > 1) {
+    hint += ` Assembly is enabled but did not finish (keys may not line up). Check the browser console for the one-shot warning, or use “Pad report”.`;
+  } else if (!assemblyWanted && parsed.modelCount > 1) {
+    hint += ` Multi-part file: preview uses the largest mesh part. Turn on “Assemble” to try socket/plug merge, or “Pad report” for diagnostics.`;
+  }
   if (parsed.multiPartCharacterPreview && parsed.previewPartIndex !== undefined) {
     hint += ` Showing part index ${nf.format(parsed.previewPartIndex)} only (largest mesh); other parts stay in bone-local space — use .psh indices + skeleton to compose.`;
   }
@@ -1174,7 +2297,7 @@ async function showPsxPreview(data) {
     const s = localStorage.getItem(STORAGE_PSX_DEBUG_MODE);
     if (
       s &&
-      ["shaded", "wireframe", "normals", "vert-norms", "edges"].includes(s)
+      ["shaded", "uv-winding", "u-dir", "wireframe", "normals", "vert-norms", "edges"].includes(s)
     ) {
       initialMode = s;
     }
@@ -1188,11 +2311,11 @@ async function showPsxPreview(data) {
     state,
     renderer,
     controls,
-    geoms: texturedGeom ? [plainGeom, texturedGeom] : [plainGeom],
+    geoms: [plainGeom, texturedGeom, uvWindingGeom, uDirLinesGeom].filter(Boolean),
     scene,
     mesh,
     mats,
-    texMaterials,
+    texMaterials: hasTexMaterials ? texMaterials : null,
     overlayRef,
     applyDebugMode,
     ro,
@@ -1205,6 +2328,7 @@ async function showPsxPreview(data) {
 function setPreviewIdle(message) {
   disposePsxPreview();
   hideAudioPreview();
+  hidePrkPreview();
   hideImagePreview();
   previewClipboardText = "";
   previewEl.classList.remove("is-hidden");
@@ -1223,6 +2347,7 @@ function setPreviewIdle(message) {
 function setPreviewContent(text, clipboardText = text, hint = DEFAULT_PREVIEW_HINT) {
   disposePsxPreview();
   hideAudioPreview();
+  hidePrkPreview();
   hideImagePreview();
   previewClipboardText = clipboardText;
   previewEl.classList.remove("is-hidden");
@@ -1426,6 +2551,56 @@ function moveFileSelection(delta) {
   selectFileEntry(Number(el.dataset.dirIndex), Number(el.dataset.fileIndex));
 }
 
+/** Tiles in the same grid row share the same top (within a few px); works with auto-fill columns. */
+const TILE_GRID_ROW_TOP_EPS_PX = 3;
+
+/**
+ * @param {HTMLElement[]} tiles
+ */
+function getTilesGridColumnCount(tiles) {
+  if (tiles.length === 0) return 1;
+  const y0 = tiles[0].getBoundingClientRect().top;
+  let n = 0;
+  for (const t of tiles) {
+    if (Math.abs(t.getBoundingClientRect().top - y0) <= TILE_GRID_ROW_TOP_EPS_PX) n++;
+    else break;
+  }
+  return Math.max(1, n);
+}
+
+/**
+ * Grid / tiles view: left-right move within a row; up-down move by one row.
+ * @param {"left" | "right" | "up" | "down"} dir
+ */
+function moveFileSelectionGrid(dir) {
+  if (!currentArchive || selectedDirIndex < 0) return;
+  const els = getVisibleFileElements();
+  if (els.length === 0) return;
+  const cols = getTilesGridColumnCount(els);
+  let idx = els.findIndex(
+    (el) =>
+      Number(el.dataset.dirIndex) === selectedDirIndex &&
+      Number(el.dataset.fileIndex) === selectedFileIndex
+  );
+  if (idx < 0) {
+    idx = dir === "right" || dir === "down" ? 0 : els.length - 1;
+  }
+  let newIdx = idx;
+  if (dir === "left") {
+    newIdx = Math.max(0, idx - 1);
+  } else if (dir === "right") {
+    newIdx = Math.min(els.length - 1, idx + 1);
+  } else if (dir === "up") {
+    newIdx = idx - cols;
+    if (newIdx < 0) return;
+  } else if (dir === "down") {
+    newIdx = idx + cols;
+    if (newIdx >= els.length) return;
+  }
+  const el = els[newIdx];
+  selectFileEntry(Number(el.dataset.dirIndex), Number(el.dataset.fileIndex));
+}
+
 /** @param {boolean} toEnd */
 function goFileEdge(toEnd) {
   if (!currentArchive || selectedDirIndex < 0) return;
@@ -1440,20 +2615,34 @@ function initFileListKeyboardNav() {
     if (workspaceEl.classList.contains("is-hidden") || !currentArchive) return;
     if (e.altKey || e.metaKey || e.ctrlKey) return;
     const k = e.key;
-    if (k === "ArrowDown" || k === "ArrowUp" || k === "Home" || k === "End" || k === "Enter") {
-      const visible = getVisibleFileElements();
-      if (visible.length === 0) return;
-      if (k === "Enter") {
-        if (selectedFileIndex >= 0) return;
-        e.preventDefault();
-        goFileEdge(false);
-        return;
-      }
+    const tilesArrow =
+      fileViewMode === "tiles" &&
+      (k === "ArrowLeft" || k === "ArrowRight" || k === "ArrowUp" || k === "ArrowDown");
+    const listArrow = fileViewMode === "list" && (k === "ArrowUp" || k === "ArrowDown");
+    if (!tilesArrow && !listArrow && k !== "Home" && k !== "End" && k !== "Enter") return;
+    const visible = getVisibleFileElements();
+    if (visible.length === 0) return;
+    if (k === "Enter") {
+      if (selectedFileIndex >= 0) return;
       e.preventDefault();
-      if (k === "ArrowDown") moveFileSelection(1);
-      else if (k === "ArrowUp") moveFileSelection(-1);
-      else if (k === "Home") goFileEdge(false);
+      goFileEdge(false);
+      return;
+    }
+    if (k === "Home" || k === "End") {
+      e.preventDefault();
+      if (k === "Home") goFileEdge(false);
       else goFileEdge(true);
+      return;
+    }
+    e.preventDefault();
+    if (fileViewMode === "tiles") {
+      if (k === "ArrowLeft") moveFileSelectionGrid("left");
+      else if (k === "ArrowRight") moveFileSelectionGrid("right");
+      else if (k === "ArrowUp") moveFileSelectionGrid("up");
+      else moveFileSelectionGrid("down");
+    } else {
+      if (k === "ArrowDown") moveFileSelection(1);
+      else moveFileSelection(-1);
     }
   });
 }
@@ -1610,9 +2799,11 @@ function renderFilesTable(di, options = {}) {
 
       const dlBtn = makeInlineDownloadButton(di, fi, entry.name);
 
+      const usePsxThumb =
+        isPsxFileName(entry.name) && entry.uncompressed_size <= TILE_PSX_THUMB_MAX_BYTES;
       const useBmpThumb =
         isBmpFileName(entry.name) && entry.uncompressed_size <= TILE_BMP_THUMB_MAX_BYTES;
-      if (useBmpThumb) {
+      if (usePsxThumb || useBmpThumb) {
         tile.classList.add("file-tile--with-thumb");
         const thumbWrap = document.createElement("span");
         thumbWrap.className = "file-tile__thumb-wrap";
@@ -1620,6 +2811,7 @@ function renderFilesTable(di, options = {}) {
         thumbImg.className = "file-tile__thumb";
         thumbImg.alt = "";
         thumbImg.dataset.pending = "1";
+        if (usePsxThumb) thumbImg.dataset.thumbKind = "psx";
         thumbWrap.append(thumbImg);
         const body = document.createElement("div");
         body.className = "file-tile__body";
@@ -1675,6 +2867,14 @@ async function showFileDetail(di, fi) {
   try {
     const skip = skipCrc.checked;
     const data = await extractEntry(currentBuffer, entry);
+    let levelBundle = null;
+    if (isPsxFileName(entry.name)) {
+      levelBundle = await resolveAutoPsxTextureSource(di, fi);
+    } else {
+      clearAutoPsxTextureSource();
+      updatePsxExternalSourceLabel();
+      levelBundle = getLevelBundleForEntry(dir, fi);
+    }
     const hasCrc = entry.crc != null;
     const crcOk = !hasCrc || skip || verifyCrc(entry, data);
 
@@ -1690,17 +2890,48 @@ async function showFileDetail(di, fi) {
     }
 
     const { label, title } = compressionUi(entry);
+    let prkParsed = null;
+    let prkParseError = "";
+    if (isPrkFileName(entry.name)) {
+      try {
+        prkParsed = parsePrk(data);
+      } catch (err) {
+        prkParseError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    const prkMeta = prkParsed
+      ? `
+          <dt>Theme</dt><dd>${escapeHtml(prkParsed.header.theme)}</dd>
+          <dt>Park size</dt><dd>${nf.format(prkParsed.width)} × ${nf.format(prkParsed.height)} cells</dd>
+          <dt>Header unk1</dt><dd class="mono-soft">${formatHexU32(prkParsed.header.unk1)}</dd>
+          <dt>Cells used</dt><dd>${nf.format(prkParsed.usedCellCount)} / ${nf.format(prkParsed.cells.length)}</dd>
+          <dt>Named gaps</dt><dd>${nf.format(prkParsed.namedGaps.length)} / ${nf.format(prkParsed.gaps.length)}</dd>
+        `
+      : "";
 
     const prkNote = isPrkFileName(entry.name)
-      ? `<dt>Park / level</dt><dd class="detail-prk-note">Skate park (<code>.prk</code>): custom-level binary from Neversoft TH-era games — <strong>not</strong> a nested PKR. This explorer only shows raw bytes; for a structural dump use community tools such as <code>disassemble-prk.py</code> in <a href="https://github.com/JayFoxRox/thps2-tools" target="_blank" rel="noopener noreferrer">thps2-tools</a>.</dd>`
+      ? `<dt>Park / level</dt><dd class="detail-prk-note">${
+          prkParsed
+            ? "Skate park save dump (<code>.prk</code>) with fixed header, cell grid, gap slots, and highscore bytes. The preview now shows a clickable raw grid inspector."
+            : `Skate park save dump (<code>.prk</code>). This file did not parse as a known THPS2-style PRK: ${escapeHtml(prkParseError || "unknown parse error")}`
+        }</dd>`
       : "";
 
     const psxNote = isPsxFileName(entry.name)
-      ? `<dt>Mesh</dt><dd class="detail-prk-note"><code>.psx</code> — Neversoft “Big Guns” engine 3D mesh / level geometry (THPS and related titles). Character rigs list many models in one file (one mesh per skeleton part, indexed like the companion <code>.psh</code>); the preview picks the largest single part. Full pose needs bone transforms. Format notes: <a href="https://gist.github.com/iamgreaser/b54531e41d77b69d7d13391deb0ac6a5" target="_blank" rel="noopener noreferrer">iamgreaser gist</a>.</dd>`
+      ? `<dt>Mesh</dt><dd class="detail-prk-note"><code>.psx</code> — Neversoft “Big Guns” engine 3D mesh / level geometry (THPS and related titles). Character rigs list many models in one file (one mesh per skeleton part, indexed like the companion <code>.psh</code>); by default the preview picks the largest single part (optional “Assemble” in the 3D toolbar tries socket/plug merge). ${
+          levelBundle?.texture && levelBundle.role !== "texture"
+            ? `For this level bundle, the preview auto-resolves <code>${escapeHtml(levelBundle.texture.entry.name)}</code> as the sibling texture library unless you manually override it. `
+            : ""
+        }“Pad report” prints pad diagnostics to the console. Format notes: <a href="https://gist.github.com/iamgreaser/b54531e41d77b69d7d13391deb0ac6a5" target="_blank" rel="noopener noreferrer">iamgreaser gist</a>.</dd>`
       : "";
 
     const pshNote = isPshFileName(entry.name)
       ? `<dt>Parts</dt><dd class="detail-prk-note"><code>.psh</code> — C header listing skeleton part IDs (and parent names in comments) for a paired <code>.psx</code>. It does not contain geometry or transforms.</dd>`
+      : "";
+
+    const trgNote = /\.trg$/i.test(entry.name)
+      ? `<dt>Triggers</dt><dd class="detail-prk-note"><code>.trg</code> — level trigger / script / metadata companion. This explorer does not parse TRG yet, but the related-files card below groups it with the sibling level mesh and texture library.</dd>`
       : "";
 
     detailEl.innerHTML = `
@@ -1711,17 +2942,30 @@ async function showFileDetail(di, fi) {
           <dt>Uncompressed</dt><dd>${formatBytes(entry.uncompressed_size)} <span class="mono-soft">(${nf.format(entry.uncompressed_size)} B)</span></dd>
           <dt>Offset</dt><dd class="mono-soft">0x${entry.offset.toString(16)}</dd>
           <dt>Checksum</dt><dd>${crcHtml}</dd>
+          ${prkMeta}
           ${prkNote}
           ${psxNote}
           ${pshNote}
+          ${trgNote}
         </dl>
       </div>`;
+    if (levelBundle) {
+      appendLevelBundleDetail(detailEl, di, levelBundle);
+    }
 
-    if (isRiffWave(data)) {
+    if (prkParsed) {
+      showPrkPreview(prkParsed);
+    } else if (isRiffWave(data)) {
       showWavPreview(data);
     } else if (isBmp(data)) {
       showBmpPreview(data);
     } else if (isPsxFileName(entry.name)) {
+      lastPsxPreviewBytes = data;
+      try {
+        globalThis.__pkrLastPsxBytes = data;
+      } catch {
+        /* ignore */
+      }
       const ok = await showPsxPreview(data);
       if (!ok) {
         const text = tryUtf8Preview(data);
@@ -1734,7 +2978,7 @@ async function showFileDetail(di, fi) {
           const hint =
             fullHex !== visible
               ? `${DEFAULT_PREVIEW_HINT} Copy includes the visible sample only for files larger than ${formatBytes(MAX_FULL_HEX_COPY)}.`
-              : `${DEFAULT_PREVIEW_HINT} Copy includes the full hex dump for this size. 3D preview unavailable (parse failed or Three.js could not load).`;
+              : `${DEFAULT_PREVIEW_HINT} Copy includes the full hex dump for this size. 3D preview unavailable (parse failed or Three.js could not load). Pad diagnostics: open the console (F12) and run dumpPsxCharacterPadDiagnostics(window.__pkrLastPsxBytes).`;
           setPreviewContent(visible, fullHex, hint);
         }
       }
@@ -2153,60 +3397,89 @@ function bindDropZone(el) {
 async function applyLoadedBuffer(buffer, fileName, options = {}) {
   currentFileName = fileName;
   currentBuffer = buffer;
+  currentLoadKind = "archive";
+  clearAutoPsxTextureSource();
+  autoPsxTextureCache.clear();
+  updatePsxExternalSourceLabel();
+  /** @type {ReturnType<typeof parsePrk> | null} */
+  let standalonePrk = null;
   try {
     currentArchive = parsePkr(currentBuffer);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    currentArchive = null;
-    currentBuffer = null;
-    treeEl.replaceChildren();
-    revokeAllTileThumbUrls();
-    filesBody.replaceChildren();
-    filesTiles.replaceChildren();
-    activeFileTypeSet.clear();
-    rebuildFileTypeFilterUi(null);
-    detailEl.innerHTML = "";
-    setPreviewIdle("");
-    fileActions.hidden = true;
-    summaryFilename.textContent = "";
-    summaryFormat.textContent = "";
-    summaryStats.textContent = "";
-    setViewMode("welcome");
-    setStatus(msg);
-    return;
+    if (isPrkFileName(fileName)) {
+      currentLoadKind = "prk";
+      currentArchive = createStandalonePrkArchive(fileName, currentBuffer.byteLength);
+      try {
+        standalonePrk = parsePrk(currentBuffer);
+      } catch {
+        standalonePrk = null;
+      }
+    } else {
+      const msg = e instanceof Error ? e.message : String(e);
+      currentArchive = null;
+      currentBuffer = null;
+      treeEl.replaceChildren();
+      revokeAllTileThumbUrls();
+      filesBody.replaceChildren();
+      filesTiles.replaceChildren();
+      activeFileTypeSet.clear();
+      rebuildFileTypeFilterUi(null);
+      detailEl.innerHTML = "";
+      setPreviewIdle("");
+      fileActions.hidden = true;
+      summaryFilename.textContent = "";
+      summaryFormat.textContent = "";
+      summaryStats.textContent = "";
+      setViewMode("welcome");
+      setStatus(msg);
+      return;
+    }
   }
 
   const totalFiles = currentArchive.dirs.reduce((n, d) => n + d.files.length, 0);
   summaryFilename.textContent = fileName;
   summaryFilename.title = fileName;
-  summaryFormat.textContent = formatLabel(currentArchive);
-  summaryStats.textContent = `${nf.format(currentArchive.dirs.length)} folders · ${nf.format(totalFiles)} files · ${formatBytes(currentBuffer.byteLength)}`;
+  summaryFormat.textContent = currentLoadKind === "prk" ? "PRK" : formatLabel(currentArchive);
+  summaryStats.textContent =
+    currentLoadKind === "prk"
+      ? standalonePrk
+        ? `${nf.format(standalonePrk.width)} × ${nf.format(standalonePrk.height)} cells · ${standalonePrk.header.theme} · ${formatBytes(currentBuffer.byteLength)}`
+        : formatBytes(currentBuffer.byteLength)
+      : `${nf.format(currentArchive.dirs.length)} folders · ${nf.format(totalFiles)} files · ${formatBytes(currentBuffer.byteLength)}`;
 
   navFolderCount.textContent = `${nf.format(currentArchive.dirs.length)}`;
 
   setViewMode("workspace");
   syncFileViewPanels();
   selectedDirIndex = 0;
-  selectedFileIndex = -1;
+  selectedFileIndex = currentLoadKind === "prk" ? 0 : -1;
   renderTree();
   renderFilesTable(0);
-  highlightSelection(0, -1);
-  showDirDetail(0);
-  setPreviewIdle("Select a file to preview its contents.");
-  fileActions.hidden = true;
+  highlightSelection(0, selectedFileIndex);
+  if (currentLoadKind === "prk") {
+    void showFileDetail(0, 0);
+  } else {
+    showDirDetail(0);
+    setPreviewIdle("Select a file to preview its contents.");
+    fileActions.hidden = true;
+  }
 
   const fh = options.fileHandle;
   if (!options.skipHistorySave && fh) {
     void historyRecordOpen(fileName, buffer.byteLength, fh).catch(() => {});
   }
 
-  setStatus(`Loaded ${fileName}. Preparing decompression…`);
-  try {
-    await loadFflate();
+  if (currentLoadKind === "archive") {
+    setStatus(`Loaded ${fileName}. Preparing decompression…`);
+    try {
+      await loadFflate();
+      setStatus(`Ready — ${fileName}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(`Loaded ${fileName}. Zlib may not work until the network can reach the helper: ${msg}`);
+    }
+  } else {
     setStatus(`Ready — ${fileName}`);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    setStatus(`Loaded ${fileName}. Zlib may not work until the network can reach the helper: ${msg}`);
   }
 
   queueMicrotask(() => {
@@ -2241,9 +3514,9 @@ async function pickAndLoadArchive() {
       multiple: false,
       types: [
         {
-          description: "PKR archives",
+          description: "PKR archives and PRK parks",
           accept: {
-            "application/octet-stream": [".pkr", ".PKR"],
+            "application/octet-stream": [".pkr", ".PKR", ".prk", ".PRK"],
           },
         },
       ],
@@ -2267,6 +3540,16 @@ helpClose.addEventListener("click", () => helpDialog.close());
 helpDialog.addEventListener("click", (e) => {
   const t = /** @type {HTMLElement} */ (e.target);
   if (t.nodeName === "DIALOG") helpDialog.close();
+});
+
+previewPopoutBtn.addEventListener("click", togglePreviewPopout);
+previewPopoutClose.addEventListener("click", () => previewPopoutDialog.close());
+previewPopoutDialog.addEventListener("click", (e) => {
+  const t = /** @type {HTMLElement} */ (e.target);
+  if (t.nodeName === "DIALOG") previewPopoutDialog.close();
+});
+previewPopoutDialog.addEventListener("close", () => {
+  dockPreviewBlock();
 });
 
 openArchiveLabel?.addEventListener("click", (e) => {
@@ -2526,6 +3809,13 @@ previewBmpFit.addEventListener("change", () => {
   applyBmpPreviewLayout();
 });
 
+previewPrkColorMode.addEventListener("change", () => {
+  if (!prkPreviewState) return;
+  prkPreviewState.colorMode = previewPrkColorMode.value || "slot3";
+  renderPrkGrid();
+  renderPrkSelection();
+});
+
 previewAutoplay.addEventListener("change", () => {
   try {
     localStorage.setItem(STORAGE_WAV_AUTOPLAY, previewAutoplay.checked ? "1" : "0");
@@ -2563,7 +3853,71 @@ previewPsxTextured.addEventListener("change", () => {
   } catch {
     /* ignore */
   }
+  refreshPsxTileThumbsGrid();
 });
+
+previewPsxAssemble.addEventListener("change", () => {
+  try {
+    localStorage.setItem(
+      PSX_CHARACTER_ASSEMBLY_STORAGE_KEY,
+      previewPsxAssemble.checked ? "1" : "0"
+    );
+  } catch {
+    /* ignore */
+  }
+  refreshCurrentSelection();
+});
+
+previewPsxPadReport.addEventListener("click", () => {
+  if (!lastPsxPreviewBytes || lastPsxPreviewBytes.length === 0) {
+    setStatus("No PSX bytes in memory — select a .psx archive entry first.");
+    return;
+  }
+  const report = dumpPsxCharacterPadDiagnostics(lastPsxPreviewBytes);
+  console.log(report);
+  setStatus("Pad report printed to the browser console (F12 → Console).");
+});
+
+previewPsxSourceBtn.addEventListener("click", () => {
+  previewPsxSourceInput.click();
+});
+
+previewPsxExportTextureBtn.addEventListener("click", () => {
+  void exportCurrentPsxTextures();
+});
+
+previewPsxSourceInput.addEventListener("change", async () => {
+  const file = previewPsxSourceInput.files?.[0];
+  if (!file) return;
+  try {
+    setStatus(`Reading external texture source ${file.name}…`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = parsePsxExternalTextureSource(bytes);
+    if (!parsed) throw new Error("not a supported PSX texture library");
+    externalPsxTextureSource = parsed;
+    externalPsxTextureSourceName = file.name;
+    updatePsxExternalSourceLabel();
+    setStatus(`Loaded external texture source ${file.name}.`);
+    refreshCurrentSelection();
+    refreshPsxTileThumbsGrid();
+  } catch (err) {
+    externalPsxTextureSource = null;
+    externalPsxTextureSourceName = "";
+    updatePsxExternalSourceLabel();
+    const msg = err instanceof Error ? err.message : String(err);
+    setStatus(`External texture source failed: ${msg}`);
+    refreshPsxTileThumbsGrid();
+  } finally {
+    previewPsxSourceInput.value = "";
+  }
+});
+
+updatePsxExternalSourceLabel();
+updatePsxTextureExportState();
+updatePreviewPopoutUi();
+
+/** DevTools: `dumpPsxCharacterPadDiagnostics(bytes)` — also `window.__pkrLastPsxBytes` after opening a `.psx` entry. */
+globalThis.dumpPsxCharacterPadDiagnostics = dumpPsxCharacterPadDiagnostics;
 
 try {
   const v = localStorage.getItem(STORAGE_FILE_VIEW);

@@ -28,7 +28,7 @@
       </span>
       <div class="app-header__titles">
         <h1 class="app-name">PKR Explorer</h1>
-        <p class="app-tagline">Neversoft / Activision archives</p>
+        <p class="app-tagline">Neversoft archives and park saves</p>
       </div>
     </div>
 
@@ -47,8 +47,8 @@
             d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 26-29.5 41.5T760-160H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Zm-84-400v-80 80Z"
           />
         </svg>
-        Open archive
-        <input type="file" id="file-input" accept=".pkr,.PKR,*/*" hidden />
+        Open file
+        <input type="file" id="file-input" accept=".pkr,.PKR,.prk,.PRK,*/*" hidden />
       </label>
       <button type="button" class="btn btn--ghost btn--with-icon" id="btn-help" aria-haspopup="dialog">
         <span class="material-icons btn__icon" aria-hidden="true">help_outline</span>
@@ -65,14 +65,14 @@
 
   <section id="welcome" class="welcome" aria-label="Getting started">
     <div class="welcome__card">
-      <h2 class="welcome__title">Open a <code>.pkr</code> archive</h2>
+      <h2 class="welcome__title">Open a <code>.pkr</code> archive or <code>.prk</code> park</h2>
       <p class="welcome__lede">
-        Browse PKR3 or THPS2-style packages, preview entries, and save individual files.
+        Browse PKR3 or THPS2-style packages, inspect PRK park dumps, preview entries, and save files.
       </p>
       <div id="welcome-drop" class="welcome__drop" tabindex="0">
         <span class="material-icons welcome__drop-icon" aria-hidden="true">cloud_upload</span>
         <span class="welcome__drop-text"><strong>Drag and drop</strong> a file here</span>
-        <span class="welcome__drop-sub">or use <em>Open archive</em> above</span>
+        <span class="welcome__drop-sub">or use <em>Open file</em> above</span>
       </div>
       <div id="recent-wrap" class="recent-wrap is-hidden" aria-label="Recently opened archives">
         <h3 class="recent-title">Recent archives</h3>
@@ -272,31 +272,55 @@
         <span class="panel-head__title">Details</span>
       </div>
       <div id="detail" class="detail-stack" role="region" aria-label="Selected item details"></div>
-      <div class="preview-block">
+      <div id="preview-home-anchor" hidden></div>
+      <div id="preview-block" class="preview-block">
         <div class="preview-head-row">
           <div class="preview-head">Preview</div>
-          <button
-            type="button"
-            id="preview-copy"
-            class="btn btn--ghost btn--preview-copy btn--with-icon"
-            disabled
-            title="Copy text or hex from the preview panel (disabled for audio, image, and 3D previews)"
-          >
-            <svg
-              class="btn__icon preview-copy__icon"
-              xmlns="http://www.w3.org/2000/svg"
-              height="24"
-              viewBox="0 -960 960 960"
-              width="24"
-              fill="currentColor"
-              aria-hidden="true"
+          <div class="preview-head-actions">
+            <button
+              type="button"
+              id="preview-popout"
+              class="btn btn--ghost btn--preview-copy btn--with-icon"
+              title="Open the preview in a larger pop-out window"
             >
-              <path
-                d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"
-              />
-            </svg>
-            Copy
-          </button>
+              <svg
+                class="btn__icon preview-copy__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M216-144q-29.7 0-50.85-21.15Q144-186.3 144-216v-528q0-29.7 21.15-50.85Q186.3-816 216-816h264v72H216v528h528v-264h72v264q0 29.7-21.15 50.85Q773.7-144 744-144H216Zm169-239-50-50 339-339H528v-72h268v268h-72v-146L385-383Z"
+                />
+              </svg>
+              <span id="preview-popout-label">Pop out</span>
+            </button>
+            <button
+              type="button"
+              id="preview-copy"
+              class="btn btn--ghost btn--preview-copy btn--with-icon"
+              disabled
+              title="Copy text or hex from the preview panel (disabled for audio, image, and 3D previews)"
+            >
+              <svg
+                class="btn__icon preview-copy__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"
+                />
+              </svg>
+              Copy
+            </button>
+          </div>
         </div>
         <div id="preview-image-toolbar" class="preview-image-toolbar is-hidden">
           <label class="preview-bmp-fit-label" title="Scale the bitmap to use the full preview area (1:1 pixels when off)">
@@ -324,29 +348,121 @@
             <span>Autoplay when opening a WAV</span>
           </label>
         </div>
+        <div id="preview-prk-wrap" class="preview-prk-wrap is-hidden" aria-label="PRK park preview">
+          <div class="preview-prk-toolbar" role="toolbar" aria-label="PRK color mode">
+            <label class="preview-prk-label" for="preview-prk-color-mode">
+              <span class="preview-prk-label__text">Color by</span>
+              <select id="preview-prk-color-mode" class="preview-prk-select">
+                <option value="slot3">Slot 3</option>
+                <option value="slot0">Slot 0</option>
+                <option value="slot1">Slot 1</option>
+                <option value="slot2">Slot 2</option>
+                <option value="variant">Variant</option>
+                <option value="flags">Flags</option>
+                <option value="indexByte">Index</option>
+              </select>
+            </label>
+            <span id="preview-prk-summary" class="preview-prk-summary"></span>
+          </div>
+          <div class="preview-prk-body">
+            <div class="preview-prk-grid-shell">
+              <div id="preview-prk-grid" class="preview-prk-grid" role="grid" aria-label="PRK piece grid"></div>
+            </div>
+            <div class="preview-prk-side">
+              <div class="preview-prk-card">
+                <div class="preview-prk-card__title">Cell</div>
+                <pre id="preview-prk-selection" class="preview-prk-selection">Select a cell.</pre>
+              </div>
+              <div class="preview-prk-card">
+                <div class="preview-prk-card__title">Named gaps</div>
+                <div id="preview-prk-gaps" class="preview-prk-gaps"></div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div id="preview-image-wrap" class="preview-image-wrap preview-image-wrap--fit is-hidden">
           <img id="preview-image" alt="" />
         </div>
         <div id="preview-psx-wrap" class="preview-psx-wrap is-hidden" aria-label="3D mesh preview">
-          <div class="preview-psx-toolbar">
+          <div class="preview-psx-toolbar" role="toolbar" aria-label="3D preview options">
             <label class="preview-psx-debug-label" for="preview-psx-debug-mode">
-              <span class="preview-psx-debug-label__text">Debug view</span>
+              <span class="preview-psx-debug-label__text">Debug</span>
               <select id="preview-psx-debug-mode" class="preview-psx-debug-select" aria-label="PSX mesh debug rendering mode">
                 <option value="shaded">Shaded (lit)</option>
+                <option value="uv-winding">UV winding</option>
+                <option value="u-dir">U direction</option>
                 <option value="wireframe">Wireframe</option>
                 <option value="normals">Normals → RGB</option>
                 <option value="vert-norms">Vertex normal lines</option>
                 <option value="edges">Creased edges</option>
               </select>
             </label>
+            <span class="preview-psx-toolbar__sep" aria-hidden="true"></span>
             <label class="preview-psx-debug-label" for="preview-psx-textured">
               <input type="checkbox" id="preview-psx-textured" class="preview-psx-toggle" />
-              <span class="preview-psx-debug-label__text">Textured surface</span>
+              <span class="preview-psx-debug-label__text">Textured</span>
             </label>
-            <label class="btn btn--ghost btn--with-icon preview-psx-source-btn">
-              External texture `.psx`
-              <input type="file" id="preview-psx-source-input" accept=".psx,.PSX,*/*" hidden />
+            <label
+              class="preview-psx-debug-label"
+              for="preview-psx-assemble"
+              title="Uses pad=1 sockets / pad=2 plug keys; off = largest-part preview (levels unchanged)"
+            >
+              <input type="checkbox" id="preview-psx-assemble" class="preview-psx-toggle" />
+              <span class="preview-psx-debug-label__text">Assemble</span>
             </label>
+            <button
+              type="button"
+              id="preview-psx-pad-report"
+              class="btn btn--ghost preview-psx-pad-btn"
+              title="Print pad/socket diagnostics to the browser console (F12)"
+            >
+              Pad report
+            </button>
+            <span class="preview-psx-toolbar__sep preview-psx-toolbar__sep--gap" aria-hidden="true"></span>
+            <button
+              type="button"
+              id="preview-psx-source-btn"
+              class="btn btn--ghost preview-psx-icon-btn"
+              title="Load a second .psx as external texture library"
+              aria-label="Import external texture .psx"
+            >
+              <svg
+                class="preview-psx-icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              id="preview-psx-export-texture"
+              class="btn btn--ghost preview-psx-icon-btn"
+              title="Download the current model texture sheet"
+              aria-label="Export current model textures"
+              disabled
+            >
+              <svg
+                class="preview-psx-icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"
+                />
+              </svg>
+            </button>
+            <input type="file" id="preview-psx-source-input" accept=".psx,.PSX,*/*" hidden />
             <span id="preview-psx-source-name" class="preview-psx-source-name">No external texture source</span>
           </div>
           <canvas id="preview-psx-canvas" class="preview-psx-canvas" width="640" height="400"></canvas>
@@ -377,7 +493,7 @@
   </main>
 
   <footer class="status-bar">
-    <span id="status" class="status-bar__msg">Ready — open an archive to begin.</span>
+    <span id="status" class="status-bar__msg">Ready — open a file to begin.</span>
     <label
       class="crc-option"
       title="When off, extracted bytes are checked against the CRC stored in PKR3 tables (THPS2 archives have no CRC field)."
@@ -403,8 +519,20 @@
         <li>Open the URL it prints (usually <code>http://127.0.0.1:8080/</code>).</li>
       </ol>
       <p class="help-muted">
-        Archives: <strong>PKR3</strong> (magic <code>PKR3</code>) and <strong>THPS2-style</strong> headers are detected automatically.
+        Archives: <strong>PKR3</strong> (magic <code>PKR3</code>) and <strong>THPS2-style</strong> headers are detected automatically. Standalone <strong>PRK</strong> park files are also supported.
       </p>
+    </div>
+  </dialog>
+
+  <dialog id="preview-popout-dialog" class="preview-popout-dialog">
+    <div class="preview-popout-dialog__inner">
+      <div class="preview-popout-dialog__head">
+        <h2 class="preview-popout-dialog__title">Preview</h2>
+        <button type="button" class="help-dialog__close" id="preview-popout-close" aria-label="Close preview pop-out">
+          <span class="material-icons" aria-hidden="true">close</span>
+        </button>
+      </div>
+      <div id="preview-popout-slot" class="preview-popout-slot"></div>
     </div>
   </dialog>
 

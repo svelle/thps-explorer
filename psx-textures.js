@@ -8,6 +8,22 @@
 const MAX_TEXTURE_DIM = 1024;
 const MAX_TEXTURES = 256;
 
+/** Neversoft-style cutout: keyed RGB (255, 0, 255) → transparent in preview. */
+const CHROMA_R = 255;
+const CHROMA_G = 0;
+const CHROMA_B = 255;
+
+/**
+ * @param {Uint8ClampedArray} rgba length width*height*4
+ */
+function applyPsxChromaTransparency(rgba) {
+  for (let i = 0; i < rgba.length; i += 4) {
+    if (rgba[i] === CHROMA_R && rgba[i + 1] === CHROMA_G && rgba[i + 2] === CHROMA_B) {
+      rgba[i + 3] = 0;
+    }
+  }
+}
+
 /** @param {number} h */
 export function psx15ToRgba(h) {
   const r = Math.round(((h & 0x1f) / 31) * 255);
@@ -17,7 +33,7 @@ export function psx15ToRgba(h) {
 }
 
 /**
- * @typedef {{ width: number, height: number, rgba: Uint8ClampedArray, nameHash: number, texIndex: number }} PsxDecodedTexture
+ * @typedef {{ width: number, height: number, strideWidth: number, rgba: Uint8ClampedArray, nameHash: number, texIndex: number }} PsxDecodedTexture
  * @typedef {{ texhashList: number[], texturesByTexIndex: Map<number, PsxDecodedTexture> }} PsxTextureSource
  */
 
@@ -184,7 +200,16 @@ function decodeTextureInfo(dv, o, fileLen) {
     }
 
     if (rgba && rgba.length === width * height * 4) {
-      texturesByTexIndex.set(texIndex, { width, height, rgba, nameHash, texIndex });
+      applyPsxChromaTransparency(rgba);
+      const strideWidth = bpp === 4 ? (width + 3) & ~3 : (width + 1) & ~1;
+      texturesByTexIndex.set(texIndex, {
+        width,
+        height,
+        strideWidth,
+        rgba,
+        nameHash,
+        texIndex,
+      });
     }
   }
 
