@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PKR Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header__brand">
+      <span class="app-logo" aria-hidden="true">
+        <svg
+          class="app-logo__svg"
+          xmlns="http://www.w3.org/2000/svg"
+          height="24"
+          viewBox="0 -960 960 960"
+          width="24"
+          fill="currentColor"
+        >
+          <path
+            d="M120-440v-320q0-33 23.5-56.5T200-840h240v400H120Zm240-80Zm160-320h240q33 0 56.5 23.5T840-760v160H520v-240Zm0 720v-400h320v320q0 33-23.5 56.5T760-120H520ZM120-360h320v240H200q-33 0-56.5-23.5T120-200v-160Zm240 80Zm240-400Zm0 240Zm-400-80h160v-240H200v240Zm400-160h160v-80H600v80Zm0 240v240h160v-240H600ZM200-280v80h160v-80H200Z"
+          />
+        </svg>
+      </span>
+      <div class="app-header__titles">
+        <h1 class="app-name">PKR Explorer</h1>
+        <p class="app-tagline">Neversoft / Activision archives</p>
+      </div>
+    </div>
+
+    <div class="app-header__actions">
+      <label class="btn btn--primary btn--with-icon">
+        <svg
+          class="btn__icon open-archive__icon"
+          xmlns="http://www.w3.org/2000/svg"
+          height="24"
+          viewBox="0 -960 960 960"
+          width="24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 26-29.5 41.5T760-160H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Zm-84-400v-80 80Z"
+          />
+        </svg>
+        Open archive
+        <input type="file" id="file-input" accept=".pkr,.PKR,*/*" hidden />
+      </label>
+      <button type="button" class="btn btn--ghost btn--with-icon" id="btn-help" aria-haspopup="dialog">
+        <span class="material-icons btn__icon" aria-hidden="true">help_outline</span>
+        How to run locally
+      </button>
+    </div>
+
+    <div id="archive-summary" class="archive-summary is-hidden" aria-live="polite">
+      <span id="summary-filename" class="archive-summary__file"></span>
+      <span id="summary-format" class="badge"></span>
+      <span id="summary-stats" class="archive-summary__stats"></span>
+    </div>
+  </header>
+
+  <section id="welcome" class="welcome" aria-label="Getting started">
+    <div class="welcome__card">
+      <h2 class="welcome__title">Open a <code>.pkr</code> archive</h2>
+      <p class="welcome__lede">
+        Browse PKR3 or THPS2-style packages, preview entries, and save individual files.
+      </p>
+      <div id="welcome-drop" class="welcome__drop" tabindex="0">
+        <span class="material-icons welcome__drop-icon" aria-hidden="true">cloud_upload</span>
+        <span class="welcome__drop-text"><strong>Drag and drop</strong> a file here</span>
+        <span class="welcome__drop-sub">or use <em>Open archive</em> above</span>
+      </div>
+      <div id="recent-wrap" class="recent-wrap is-hidden" aria-label="Recently opened archives">
+        <h3 class="recent-title">Recent archives</h3>
+        <p class="recent-lede">
+          When your browser supports it, archives opened with <em>Open archive</em> are remembered by file reference
+          only—nothing extra is copied into storage.
+        </p>
+        <ul id="recent-list" class="recent-list"></ul>
+        <div class="recent-footer">
+          <label class="recent-auto-label">
+            <input type="checkbox" id="recent-auto-restore" checked />
+            Reopen last archive on reload
+          </label>
+          <button type="button" class="link-button" id="recent-clear">Clear recent</button>
+        </div>
+      </div>
+      <p class="welcome__footnote">
+        Tip: this app loads in your browser over HTTP.
+        <button type="button" class="link-button link-button--with-icon" id="welcome-help">
+          <span class="material-icons link-button__icon" aria-hidden="true">arrow_forward</span>
+          See local setup
+        </button>
+      </p>
+    </div>
+  </section>
+
+  <main id="workspace" class="workspace is-hidden" aria-label="Archive browser">
+    <aside class="workspace__nav" aria-label="Folders">
+      <div class="panel-head">
+        <span class="panel-head__title">Folders</span>
+        <span id="nav-folder-count" class="panel-head__meta"></span>
+      </div>
+      <div class="tree-scroller">
+        <nav id="tree" class="tree" aria-label="Folders in this archive — files open in the table"></nav>
+      </div>
+    </aside>
+
+    <section class="workspace__list" aria-label="Files in folder">
+      <div class="list-toolbar">
+        <div class="list-toolbar__titles">
+          <h2 id="folder-title" class="folder-title">—</h2>
+          <p id="folder-subtitle" class="folder-subtitle"></p>
+        </div>
+        <div class="list-toolbar__aside">
+          <div class="view-toggle" role="group" aria-label="File layout">
+            <button
+              type="button"
+              id="view-mode-list"
+              class="view-toggle__btn is-active"
+              aria-pressed="true"
+            >
+              <svg
+                class="view-toggle__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M200-520q-33 0-56.5-23.5T120-600v-160q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v160q0 33-23.5 56.5T760-520H200Zm0-80h560v-160H200v160Zm0 480q-33 0-56.5-23.5T120-200v-160q0-33 23.5-56.5T200-440h560q33 0 56.5 23.5T840-360v160q0 33-23.5 56.5T760-120H200Zm0-80h560v-160H200v160Zm0-560v160-160Zm0 400v160-160Z"
+                />
+              </svg>
+              List
+            </button>
+            <button type="button" id="view-mode-tiles" class="view-toggle__btn" aria-pressed="false">
+              <svg
+                class="view-toggle__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M120-520v-320h320v320H120Zm0 400v-320h320v320H120Zm400-400v-320h320v320H520Zm0 400v-320h320v320H520ZM200-600h160v-160H200v160Zm400 0h160v-160H600v160Zm0 400h160v-160H600v160Zm-400 0h160v-160H200v160Zm400-400Zm0 240Zm-240 0Zm0-240Z"
+                />
+              </svg>
+              Grid
+            </button>
+          </div>
+          <div class="file-type-filter-wrap" id="file-type-filter-wrap">
+            <button
+              type="button"
+              id="file-type-filter-btn"
+              class="btn btn--ghost file-type-filter-btn btn--with-icon"
+              aria-expanded="false"
+              aria-haspopup="true"
+              aria-controls="file-type-filter-panel"
+            >
+              <svg
+                class="btn__icon file-type-filter-btn__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="24"
+                viewBox="0 -960 960 960"
+                width="24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M400-240v-80h160v80H400ZM240-440v-80h480v80H240ZM120-640v-80h720v80H120Z" />
+              </svg>
+              <span id="file-type-filter-btn-label" class="file-type-filter-btn__text">File type</span>
+            </button>
+            <div
+              id="file-type-filter-panel"
+              class="file-type-filter-panel"
+              hidden
+              role="group"
+              aria-label="Filter by file type"
+            ></div>
+          </div>
+          <input
+            type="search"
+            id="file-filter"
+            class="file-filter"
+            placeholder="Filter by file name…"
+            autocomplete="off"
+            aria-label="Filter files in this folder"
+          />
+        </div>
+      </div>
+      <div
+        id="files-table-shell"
+        class="table-shell"
+        tabindex="0"
+        aria-label="Files in this folder. Use arrow keys to change selection."
+      >
+        <div id="files-list-panel" class="files-panel">
+          <table class="files-table">
+            <thead>
+              <tr>
+                <th scope="col" class="files-table__th">
+                  <button type="button" class="files-table__sort" data-sort-key="name">
+                    File name
+                  </button>
+                </th>
+                <th scope="col" class="files-table__th">
+                  <button type="button" class="files-table__sort" data-sort-key="compression">
+                    Compression
+                  </button>
+                </th>
+                <th scope="col" class="files-table__th col-num">
+                  <button type="button" class="files-table__sort" data-sort-key="size">Size</button>
+                </th>
+                <th scope="col" class="files-table__th col-num">
+                  <button type="button" class="files-table__sort" data-sort-key="archive">
+                    In archive
+                  </button>
+                </th>
+                <th scope="col" class="files-table__th col-num">
+                  <button type="button" class="files-table__sort" data-sort-key="offset">
+                    Offset
+                  </button>
+                </th>
+                <th
+                  scope="col"
+                  class="files-table__th files-table__th--dl col-num"
+                  aria-label="Download file"
+                >
+                  <svg
+                    class="icon-download files-table__th-dl-icon"
+                    xmlns="http://www.w3.org/2000/svg"
+                    height="24"
+                    viewBox="0 -960 960 960"
+                    width="24"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"
+                    />
+                  </svg>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="files-body"></tbody>
+          </table>
+        </div>
+        <div id="files-tile-panel" class="files-panel is-hidden">
+          <div id="files-tiles" class="files-tiles" role="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="workspace__inspector" aria-label="File details">
+      <div
+        id="inspector-resize-handle"
+        class="inspector-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize details panel"
+        tabindex="0"
+      ></div>
+      <div class="panel-head">
+        <span class="panel-head__title">Details</span>
+      </div>
+      <div id="detail" class="detail-stack" role="region" aria-label="Selected item details"></div>
+      <div class="preview-block">
+        <div class="preview-head-row">
+          <div class="preview-head">Preview</div>
+          <button
+            type="button"
+            id="preview-copy"
+            class="btn btn--ghost btn--preview-copy btn--with-icon"
+            disabled
+            title="Copy text or hex from the preview panel (disabled for audio, image, and 3D previews)"
+          >
+            <svg
+              class="btn__icon preview-copy__icon"
+              xmlns="http://www.w3.org/2000/svg"
+              height="24"
+              viewBox="0 -960 960 960"
+              width="24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"
+              />
+            </svg>
+            Copy
+          </button>
+        </div>
+        <div id="preview-image-toolbar" class="preview-image-toolbar is-hidden">
+          <label class="preview-bmp-fit-label" title="Scale the bitmap to use the full preview area (1:1 pixels when off)">
+            <input type="checkbox" id="preview-bmp-fit" checked />
+            <span>Fit to frame</span>
+          </label>
+        </div>
+        <div id="preview-audio-wrap" class="preview-audio-wrap is-hidden">
+          <audio id="preview-audio" controls preload="metadata" playsinline></audio>
+          <div class="preview-volume">
+            <label for="preview-volume-range" class="preview-volume__label">Volume</label>
+            <input
+              type="range"
+              id="preview-volume-range"
+              class="preview-volume__range"
+              min="0"
+              max="1"
+              step="0.01"
+              value="0.2"
+              aria-label="Playback volume"
+            />
+          </div>
+          <label class="preview-autoplay">
+            <input type="checkbox" id="preview-autoplay" />
+            <span>Autoplay when opening a WAV</span>
+          </label>
+        </div>
+        <div id="preview-image-wrap" class="preview-image-wrap preview-image-wrap--fit is-hidden">
+          <img id="preview-image" alt="" />
+        </div>
+        <div id="preview-psx-wrap" class="preview-psx-wrap is-hidden" aria-label="3D mesh preview">
+          <div class="preview-psx-toolbar">
+            <label class="preview-psx-debug-label" for="preview-psx-debug-mode">
+              <span class="preview-psx-debug-label__text">Debug view</span>
+              <select id="preview-psx-debug-mode" class="preview-psx-debug-select" aria-label="PSX mesh debug rendering mode">
+                <option value="shaded">Shaded (lit)</option>
+                <option value="wireframe">Wireframe</option>
+                <option value="normals">Normals → RGB</option>
+                <option value="vert-norms">Vertex normal lines</option>
+                <option value="edges">Creased edges</option>
+              </select>
+            </label>
+            <label class="preview-psx-debug-label" for="preview-psx-textured">
+              <input type="checkbox" id="preview-psx-textured" class="preview-psx-toggle" />
+              <span class="preview-psx-debug-label__text">Textured surface</span>
+            </label>
+            <label class="btn btn--ghost btn--with-icon preview-psx-source-btn">
+              External texture `.psx`
+              <input type="file" id="preview-psx-source-input" accept=".psx,.PSX,*/*" hidden />
+            </label>
+            <span id="preview-psx-source-name" class="preview-psx-source-name">No external texture source</span>
+          </div>
+          <canvas id="preview-psx-canvas" class="preview-psx-canvas" width="640" height="400"></canvas>
+          <p class="preview-psx-hint">Drag to orbit · scroll to zoom (Neversoft .psx — textures &amp; GPU tricks not replicated)</p>
+        </div>
+        <pre id="preview" class="preview" aria-live="polite"></pre>
+        <p id="preview-hint" class="preview-hint">Hex or plain text (first portion of the file).</p>
+      </div>
+      <div class="inspector-actions" id="file-actions" hidden>
+        <button type="button" id="btn-download" class="btn btn--primary btn--block btn--with-icon">
+          <svg
+            class="btn__icon icon-download"
+            xmlns="http://www.w3.org/2000/svg"
+            height="24"
+            viewBox="0 -960 960 960"
+            width="24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"
+            />
+          </svg>
+          Download this file
+        </button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="status-bar">
+    <span id="status" class="status-bar__msg">Ready — open an archive to begin.</span>
+    <label
+      class="crc-option"
+      title="When off, extracted bytes are checked against the CRC stored in PKR3 tables (THPS2 archives have no CRC field)."
+    >
+      <input type="checkbox" id="skip-crc" />
+      <span>Skip CRC verification</span>
+    </label>
+  </footer>
+
+  <dialog id="help-dialog" class="help-dialog">
+    <div class="help-dialog__inner">
+      <button type="button" class="help-dialog__close" id="help-close" aria-label="Close">
+        <span class="material-icons" aria-hidden="true">close</span>
+      </button>
+      <h2 class="help-dialog__title">Running PKR Explorer locally</h2>
+      <p>
+        Browsers block some features when you open <code>index.html</code> as a <code>file://</code> URL.
+        Serving this folder over HTTP fixes module loading and the zlib helper loaded from the network.
+      </p>
+      <ol class="help-steps">
+        <li>Open a terminal in the <code>pkr-explorer</code> folder.</li>
+        <li>Run <code>python serve.py</code></li>
+        <li>Open the URL it prints (usually <code>http://127.0.0.1:8080/</code>).</li>
+      </ol>
+      <p class="help-muted">
+        Archives: <strong>PKR3</strong> (magic <code>PKR3</code>) and <strong>THPS2-style</strong> headers are detected automatically.
+      </p>
+    </div>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
