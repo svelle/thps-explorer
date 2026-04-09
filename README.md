@@ -2,6 +2,13 @@
 
 PKR Explorer is a browser-based Tony Hawk's Pro Skater data file viewer.
 
+<img width="2253" height="1263" alt="image" src="https://github.com/user-attachments/assets/cf4abd40-f004-472d-84e2-6fe3db7eaf7a" />
+
+<img width="2247" height="1266" alt="image" src="https://github.com/user-attachments/assets/d4f75f1d-7e5f-4f4d-bfb8-fa025c4ceab6" />
+
+<img width="2249" height="1263" alt="image" src="https://github.com/user-attachments/assets/08245678-6b66-40a2-ae2d-450b8d0b1c87" />
+
+
 It is built for inspecting Neversoft archive and park-related formats in the browser, with support for browsing archive contents, previewing common asset types, and viewing some PlayStation-era model data.
 
 The latest version is available at: https://svelle.github.io/thps-explorer/
