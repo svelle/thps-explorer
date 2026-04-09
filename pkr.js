@@ -9,17 +9,14 @@ export const UNCOMPRESSED = 0xffff_fffe;
 export const PKR_FORMAT_PKR3 = /** @type {const} */ ("pkr3");
 export const PKR_FORMAT_THPS2 = /** @type {const} */ ("thps2");
 
-/** @type {string} */
-export const FFLATE_MODULE_URL = "https://esm.sh/fflate@0.8.2";
-
 let fflatePromise = null;
 
 /**
- * @returns {Promise<{ unzlib: (data: Uint8Array) => Uint8Array }>}
+ * @returns {Promise<import("fflate")>}
  */
 export function loadFflate() {
   if (!fflatePromise) {
-    fflatePromise = import(/* @vite-ignore */ FFLATE_MODULE_URL);
+    fflatePromise = import("fflate");
   }
   return fflatePromise;
 }

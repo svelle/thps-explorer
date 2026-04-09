@@ -26,42 +26,58 @@ I will never provide any game files, you need to find those on your own.
 
 ## Running It
 
+Prerequisites: [Bun](https://bun.sh/) 1.x (`bun install` installs app dependencies).
+
 ### Online / hosted
 
-This project is a static web app. When hosted on any normal web server or static hosting platform, the site entry point is `index.html`.
-
-You do not need `serve.py` in production hosting. Just serve the repository root as static files.
-
-### Local testing
-
-For local testing, use the included Python helper:
+Build a production bundle, then host the `dist/` folder as static files (not the repo root).
 
 ```bash
-python serve.py
+bun run build
 ```
 
-Then open the printed URL in your browser, usually `http://127.0.0.1:8080/`.
+The entry file is `dist/index.html`.
 
-The helper exists because opening `index.html` directly via `file://` can break module loading and CDN-loaded dependencies in some browsers.
+### Local development
+
+Hot reload while editing sources:
+
+```bash
+bun run dev
+```
+
+Then open the URL Bun prints in the terminal.
+
+### Local preview (production build)
+
+After `bun run build`, serve `dist/`:
+
+```bash
+bun run preview
+```
+
+Use `bun run preview -- --port 9000` (or env `PORT`) to pick another port.
+
+Opening `index.html` via `file://` can break module loading in some browsers, so use HTTP for local work (`bun run dev` or `bun run preview`).
 
 ## Tech Notes
 
-- Plain HTML, CSS, and JavaScript modules
-- No build step
-- `Three.js` is loaded from a CDN for `.psx` preview rendering
-- `fflate` is loaded from a CDN for zlib-compressed archive entries
+- Plain HTML, CSS, and JavaScript modules in the repo root; [Bun](https://bun.sh/) bundles them for release
+- `bun run build` emits hashed JS/CSS into `dist/` and bundles `three` (PSX preview) and `fflate` (zlib / folder ZIP) from npm
+- UI fonts still load from Google Fonts / Material Icons in `index.html` (optional CDN)
 
 ## Attribution
 
 This project uses or references the following third-party work:
 
-- [`three.js`](https://threejs.org/) for browser-based 3D rendering
-- [`fflate`](https://github.com/101arrowz/fflate) for zlib decompression in the browser
-- THPS2-style PKR support in `pkr.js` is based in part on the `extract-pkr.py` layout from [`JayFoxRox/thps2-tools`](https://github.com/JayFoxRox/thps2-tools)
+- `[three.js](https://threejs.org/)` for browser-based 3D rendering
+- `[fflate](https://github.com/101arrowz/fflate)` for zlib decompression in the browser
+- THPS2-style PKR support in `pkr.js` is based in part on the `extract-pkr.py` layout from `[JayFoxRox/thps2-tools](https://github.com/JayFoxRox/thps2-tools)`
 - `.psx` parsing and texture handling in `psx-model.js` and `psx-textures.js` follow public format notes by GreaseMonkey / iamgreaser: [gist](https://gist.github.com/iamgreaser/b54531e41d77b69d7d13391deb0ac6a5)
 
 ## Project Files
 
+- `package.json`: Bun scripts and npm dependencies (`three`, `fflate`)
 - `index.html`: app shell and UI markup
 - `app.js`: main application logic
 - `pkr.js`: PKR archive parsing and extraction
@@ -69,12 +85,12 @@ This project uses or references the following third-party work:
 - `psx-model.js`: `.psx` geometry parsing and preview logic
 - `psx-textures.js`: `.psx` texture decoding helpers
 - `styles.css`: app styling
-- `serve.py`: local static server for testing
+- `preview.ts`: tiny static server for `bun run preview` (`dist/` after build)
 
 ## Limitations
 
 - `.psx` preview is best effort and does not fully replicate original PS1 rendering behavior
-- Some features rely on CDN-hosted dependencies, so fully offline use would require vendoring them
+- Icon and web fonts are still loaded from Google’s CDN unless you vendor or replace those `<link>` tags in `index.html`
 - There is currently no automated test suite in this repo
 
 ## Purpose

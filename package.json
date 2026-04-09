@@ -1,0 +1,14 @@
+{
+  "name": "pkr-explorer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot ./index.html",
+    "build": "bun build ./index.html --outdir=dist --minify --sourcemap",
+    "preview": "bun ./preview.ts"
+  },
+  "dependencies": {
+    "fflate": "0.8.2",
+    "three": "0.161.0"
+  }
+}

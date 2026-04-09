@@ -7,7 +7,6 @@ import {
   COMPRESSED_ZLIB,
   UNCOMPRESSED,
   loadFflate,
-  FFLATE_MODULE_URL,
 } from "./pkr.js";
 import { parsePrk, hexBytes } from "./prk.js";
 import {
@@ -224,7 +223,7 @@ let threeThumbImportPromise = null;
 /** @returns {Promise<typeof import("three")>} */
 function getThreeForThumb() {
   if (!threeThumbImportPromise) {
-    threeThumbImportPromise = import("https://esm.sh/three@0.161.0");
+    threeThumbImportPromise = import("three");
   }
   return threeThumbImportPromise;
 }
@@ -607,8 +606,7 @@ async function downloadFolderZip(di) {
 
   setStatus(`Zipping ${dir.name}…`);
   try {
-    await loadFflate();
-    const fflate = await import(/* @vite-ignore */ FFLATE_MODULE_URL);
+    const fflate = await loadFflate();
     const zip = fflate.zip;
     if (typeof zip !== "function") {
       throw new Error("fflate zip() not available from module");
@@ -1773,14 +1771,10 @@ async function showPsxPreview(data) {
   /** @type {new (m: import("three").Mesh, n?: number, c?: number) => ThreeObject3D} */
   let VertexNormalsHelperCtor;
   try {
-    THREE = await import("https://esm.sh/three@0.161.0");
-    const ctrlMod = await import(
-      "https://esm.sh/three@0.161.0/examples/jsm/controls/OrbitControls.js"
-    );
+    THREE = await import("three");
+    const ctrlMod = await import("three/examples/jsm/controls/OrbitControls.js");
     OrbitControlsCtor = ctrlMod.OrbitControls;
-    const helpMod = await import(
-      "https://esm.sh/three@0.161.0/examples/jsm/helpers/VertexNormalsHelper.js"
-    );
+    const helpMod = await import("three/examples/jsm/helpers/VertexNormalsHelper.js");
     VertexNormalsHelperCtor = helpMod.VertexNormalsHelper;
   } catch {
     return false;
@@ -3476,7 +3470,7 @@ async function applyLoadedBuffer(buffer, fileName, options = {}) {
       setStatus(`Ready — ${fileName}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setStatus(`Loaded ${fileName}. Zlib may not work until the network can reach the helper: ${msg}`);
+      setStatus(`Loaded ${fileName}. Zlib helper failed to load: ${msg}`);
     }
   } else {
     setStatus(`Ready — ${fileName}`);
