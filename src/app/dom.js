@@ -84,6 +84,11 @@ export function $(id) {
  * @property {HTMLElement} previewPsxPartsAside
  * @property {HTMLButtonElement} previewPsxPartsToggle
  * @property {HTMLDivElement} previewPsxPartList
+ * @property {HTMLElement} previewPsxAnimRow
+ * @property {HTMLSelectElement} previewPsxAnimMode
+ * @property {HTMLButtonElement} previewPsxAnimPlay
+ * @property {HTMLInputElement} previewPsxAnimFrame
+ * @property {HTMLElement} previewPsxAnimStatus
  * @property {HTMLElement} statusEl
  * @property {HTMLButtonElement} btnDownload
  * @property {HTMLDialogElement} helpDialog
@@ -178,6 +183,11 @@ export function initDomRefs() {
     previewPsxPartsAside: $("preview-psx-parts-aside"),
     previewPsxPartsToggle: /** @type {HTMLButtonElement} */ ($("preview-psx-parts-toggle")),
     previewPsxPartList: /** @type {HTMLDivElement} */ ($("preview-psx-part-list")),
+    previewPsxAnimRow: $("preview-psx-anim-row"),
+    previewPsxAnimMode: /** @type {HTMLSelectElement} */ ($("preview-psx-anim-mode")),
+    previewPsxAnimPlay: /** @type {HTMLButtonElement} */ ($("preview-psx-anim-play")),
+    previewPsxAnimFrame: /** @type {HTMLInputElement} */ ($("preview-psx-anim-frame")),
+    previewPsxAnimStatus: $("preview-psx-anim-status"),
     statusEl: $("status"),
     btnDownload: /** @type {HTMLButtonElement} */ ($("btn-download")),
     helpDialog: /** @type {HTMLDialogElement} */ ($("help-dialog")),

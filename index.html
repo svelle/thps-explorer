@@ -543,6 +543,40 @@
                   <input type="file" id="preview-psx-source-input" accept=".psx,.PSX,*/*" hidden />
                   <span id="preview-psx-source-name" class="preview-psx-source-name">No external texture source</span>
                 </div>
+                <div
+                  id="preview-psx-anim-row"
+                  class="preview-psx-anim-row is-hidden"
+                  role="region"
+                  aria-label="Rigid body animation (experimental)"
+                >
+                  <label class="preview-psx-debug-label" for="preview-psx-anim-mode">
+                    <span class="preview-psx-debug-label__text">Anim</span>
+                    <select id="preview-psx-anim-mode" class="preview-psx-debug-select" aria-label="Part animation mode">
+                      <option value="off">Off</option>
+                      <option value="demo">Demo (rig)</option>
+                      <option value="clip">Clip (heuristic scan)</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    id="preview-psx-anim-play"
+                    class="btn btn--ghost preview-psx-anim-play"
+                    disabled
+                  >
+                    Play
+                  </button>
+                  <input
+                    type="range"
+                    id="preview-psx-anim-frame"
+                    class="preview-psx-anim-frame"
+                    min="0"
+                    max="0"
+                    value="0"
+                    disabled
+                    aria-label="Animation frame"
+                  />
+                  <span id="preview-psx-anim-status" class="preview-psx-anim-status" aria-live="polite"></span>
+                </div>
                 <div class="preview-psx-main">
                   <div id="preview-psx-canvas-stack" class="preview-psx-canvas-stack">
                     <canvas id="preview-psx-canvas" class="preview-psx-canvas" width="640" height="400"></canvas>

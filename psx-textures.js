@@ -56,6 +56,123 @@ function skipTaggedChunks(dv, start, fileLen) {
 }
 
 /**
+ * Walk tagged chunks from `start` until the 0xffffffff terminator (same layout as `skipTaggedChunks`).
+ * @param {DataView} dv
+ * @param {number} start
+ * @param {number} fileLen
+ * @returns {{ chunks: { type: number, typeHex: string, offset: number, payloadLen: number, byteLen: number }[], terminatorOffset: number } | null}
+ */
+export function enumerateTaggedChunks(dv, start, fileLen) {
+  let o = start;
+  /** @type {{ type: number, typeHex: string, offset: number, payloadLen: number, byteLen: number }[]} */
+  const chunks = [];
+  while (o + 4 <= fileLen) {
+    const type = dv.getUint32(o, true);
+    if (type === 0xffffffff) return { chunks, terminatorOffset: o };
+    if (o + 8 > fileLen) return null;
+    const chLen = dv.getUint32(o + 4, true);
+    if (chLen < 0 || chLen > fileLen || o + 8 + chLen > fileLen) return null;
+    chunks.push({
+      type,
+      typeHex: `0x${type.toString(16)}`,
+      offset: o,
+      payloadLen: chLen,
+      byteLen: 8 + chLen,
+    });
+    o += 8 + chLen;
+  }
+  return null;
+}
+
+/**
+ * Last byte index touched by the same sequential decode as `decodeTextureInfo` (exclusive end), or null.
+ * Used to find file tail after embedded textures for heuristic scans.
+ * @param {DataView} dv
+ * @param {number} o
+ * @param {number} fileLen
+ * @returns {number | null}
+ */
+export function getTextureDecodeHighwaterOffset(dv, o, fileLen) {
+  if (o + 4 > fileLen) return null;
+  let maxEnd = o;
+  const texhashCount = dv.getUint32(o, true);
+  o += 4;
+  if (texhashCount > MAX_TEXTURES || o + texhashCount * 4 > fileLen) return null;
+  o += texhashCount * 4;
+  maxEnd = Math.max(maxEnd, o);
+
+  if (o + 4 > fileLen) return null;
+  const nPal4 = dv.getUint32(o, true);
+  o += 4;
+  for (let i = 0; i < nPal4; i++) {
+    if (o + 4 + 32 > fileLen) return null;
+    o += 4 + 32;
+  }
+  maxEnd = Math.max(maxEnd, o);
+
+  if (o + 4 > fileLen) return null;
+  const nPal8 = dv.getUint32(o, true);
+  o += 4;
+  for (let i = 0; i < nPal8; i++) {
+    if (o + 4 + 512 > fileLen) return null;
+    o += 4 + 512;
+  }
+  maxEnd = Math.max(maxEnd, o);
+
+  if (o + 4 > fileLen) return null;
+  const nTex = dv.getUint32(o, true);
+  o += 4;
+  if (nTex > MAX_TEXTURES || o + nTex * 4 > fileLen) return null;
+  /** @type {number[]} */
+  const ptrs = [];
+  for (let i = 0; i < nTex; i++) {
+    ptrs.push(dv.getUint32(o + i * 4, true) >>> 0);
+  }
+  o += nTex * 4;
+  maxEnd = Math.max(maxEnd, o);
+
+  for (const ptr of ptrs) {
+    if (ptr < 8 || ptr + 20 > fileLen) continue;
+    const colorCount = dv.getUint32(ptr + 4, true);
+    const width = dv.getUint16(ptr + 16, true);
+    const height = dv.getUint16(ptr + 18, true);
+    if (width === 0 || height === 0 || width > MAX_TEXTURE_DIM || height > MAX_TEXTURE_DIM) continue;
+    maxEnd = Math.max(maxEnd, ptr + 20);
+    let p = ptr + 20;
+    if (colorCount === 16) {
+      const alignedW = (width + 3) & ~3;
+      const bytesPerRow = alignedW >> 1;
+      const end = p + bytesPerRow * height;
+      if (end <= fileLen) maxEnd = Math.max(maxEnd, end);
+    } else if (colorCount === 256) {
+      const alignedW = (width + 1) & ~1;
+      const end = p + alignedW * height;
+      if (end <= fileLen) maxEnd = Math.max(maxEnd, end);
+    }
+  }
+
+  return maxEnd;
+}
+
+/**
+ * Byte offset just past the last embedded texture bitmap (same basis as `parsePsxEmbeddedTextureSource`), or null.
+ * @param {DataView} dv
+ * @param {number} chunkPtr
+ * @param {number} fileLen
+ * @param {number} modelCount
+ * @returns {number | null}
+ */
+export function getEmbeddedTextureEndOffset(dv, chunkPtr, fileLen, modelCount) {
+  if (chunkPtr < 8 || chunkPtr >= fileLen) return null;
+  const term = skipTaggedChunks(dv, chunkPtr, fileLen);
+  if (term < 0 || term + 4 > fileLen || dv.getUint32(term, true) !== 0xffffffff) return null;
+  let o = term + 4;
+  if (modelCount < 0 || modelCount > 65536 || o + modelCount * 4 > fileLen) return null;
+  o += modelCount * 4;
+  return getTextureDecodeHighwaterOffset(dv, o, fileLen);
+}
+
+/**
  * @param {DataView} dv
  * @param {number} o
  * @param {number} fileLen

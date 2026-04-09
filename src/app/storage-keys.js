@@ -5,8 +5,6 @@ export const STORAGE_BMP_FIT = "pkr-explorer-bmp-fit-frame";
 export const STORAGE_AUTO_RESTORE = "pkr-explorer-auto-restore";
 export const STORAGE_PSX_DEBUG_MODE = "pkr-explorer-psx-debug-mode";
 export const STORAGE_PSX_SURFACE_MODE = "pkr-explorer-psx-surface-mode";
-/** `"3d"` | `"uv"` — PSX preview: 3D mesh vs texture sheet + UV overlay. */
-export const STORAGE_PSX_VIEW_MODE = "pkr-explorer-psx-view-mode";
 
 /** `"dark"` | `"light"` — Warehouse 99 dark vs light edition. */
 export const STORAGE_THEME = "pkr-explorer-theme";

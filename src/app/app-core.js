@@ -17,6 +17,13 @@ import {
 } from "../../psx-model.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { parsePsxExternalTextureSource } from "../../psx-textures.js";
+import {
+  scanPsxAnimationHeuristic,
+  ensurePartBindPoseUserData,
+  restorePartBindPose,
+  applyDemoRigidPartWave,
+  applyPsxAnimClipFrame,
+} from "../../psx-animation.js";
 
 import { initDomRefs, getDom, getInspectorPanel } from "./dom.js";
 import { state } from "./state.js";
@@ -28,7 +35,6 @@ import {
   STORAGE_AUTO_RESTORE,
   STORAGE_PSX_DEBUG_MODE,
   STORAGE_PSX_SURFACE_MODE,
-  STORAGE_PSX_VIEW_MODE,
   HISTORY_DB_NAME,
   HISTORY_DB_VER,
   HISTORY_META,
@@ -66,6 +72,33 @@ import {
   escapeHtml,
   formatRecentTime,
 } from "./format.js";
+
+/**
+ * Three.js WebGLCapabilities assumes `gl.getShaderPrecisionFormat` never returns null; the WebGL
+ * spec allows null (e.g. lost context / some drivers), which throws when reading `.precision`.
+ */
+let _shaderPrecisionPolyfillInstalled = false;
+function ensureShaderPrecisionFormatPolyfill() {
+  if (_shaderPrecisionPolyfillInstalled) return;
+  _shaderPrecisionPolyfillInstalled = true;
+  if (typeof WebGLRenderingContext === "undefined") return;
+  const fallback = Object.freeze({ precision: 23, rangeMin: 127, rangeMax: 127 });
+  /**
+   * @param {{ getShaderPrecisionFormat?: (a: number, b: number) => WebGLShaderPrecisionFormat | null }} Proto
+   */
+  function wrap(Proto) {
+    if (!Proto || typeof Proto.getShaderPrecisionFormat !== "function") return;
+    const orig = Proto.getShaderPrecisionFormat;
+    Proto.getShaderPrecisionFormat = function (shaderType, precisionType) {
+      const r = orig.call(this, shaderType, precisionType);
+      return r ?? fallback;
+    };
+  }
+  wrap(WebGLRenderingContext.prototype);
+  if (typeof WebGL2RenderingContext !== "undefined") {
+    wrap(WebGL2RenderingContext.prototype);
+  }
+}
 
 initDomRefs();
 const {
@@ -144,6 +177,11 @@ const {
   previewPsxPartsAside,
   previewPsxPartsToggle,
   previewPsxPartList,
+  previewPsxAnimRow,
+  previewPsxAnimMode,
+  previewPsxAnimPlay,
+  previewPsxAnimFrame,
+  previewPsxAnimStatus,
   statusEl,
   btnDownload,
   helpDialog,
@@ -752,6 +790,9 @@ function disposePsxPreview() {
     }
     cancelAnimationFrame(state.psxPreviewCtx.state.rafId);
     state.psxPreviewCtx.controls.dispose();
+    if (state.psxPreviewCtx.mesh?.isGroup) {
+      restorePartBindPose(state.psxPreviewCtx.mesh);
+    }
     const { overlayRef, scene } = state.psxPreviewCtx;
     for (const h of overlayRef.vertNormHelpers) {
       scene.remove(h);
@@ -816,6 +857,11 @@ function disposePsxPreview() {
   previewPsxPartsAside.classList.remove("is-collapsed");
   previewPsxPartList.hidden = false;
   previewPsxPartsToggle.setAttribute("aria-expanded", "true");
+  previewPsxAnimRow.classList.add("is-hidden");
+  previewPsxAnimMode.value = "off";
+  previewPsxAnimPlay.textContent = "Play";
+  previewPsxAnimFrame.disabled = true;
+  previewPsxAnimStatus.textContent = "";
   previewBlock.classList.remove("preview-block--psx-toolbar");
 }
 
@@ -1293,6 +1339,7 @@ async function renderPsxThumbObjectUrl(data) {
   } catch {
     return null;
   }
+  ensureShaderPrecisionFormatPolyfill();
 
   const hasTextured =
     parsed.textured &&
@@ -1747,6 +1794,7 @@ async function showPsxPreview(data) {
   } catch {
     return false;
   }
+  ensureShaderPrecisionFormatPolyfill();
 
   /** @type {import("three").MeshStandardMaterial[] | null} */
   let texMaterials = null;
@@ -2476,11 +2524,86 @@ async function showPsxPreview(data) {
   controls.autoRotateSpeed = 0.45;
   controls.update();
 
+  /** @type {import("../../psx-animation.js").PsxAnimClip | null} */
+  let animClip = null;
+  let animScanNotes = "";
+  if (usePartGroup) {
+    const sr = scanPsxAnimationHeuristic(data, parsed.modelCount);
+    animClip = sr.clip;
+    animScanNotes = sr.scanNotes;
+  }
+
+  let animMode = "off";
+  let animPlaying = false;
+  let animFrameIndex = 0;
+  let animTime = 0;
+  let lastAnimTs = 0;
+  const animFps = 30;
+
+  function syncAnimStatusUi() {
+    if (!usePartGroup) return;
+    if (animMode === "off") {
+      previewPsxAnimStatus.textContent = "";
+    } else if (animMode === "demo") {
+      previewPsxAnimStatus.textContent = "Demo rigid motion (not from disk)";
+    } else if (animClip) {
+      const fi = Math.floor(animFrameIndex);
+      const tail = animScanNotes.length > 90 ? `${animScanNotes.slice(0, 90)}…` : animScanNotes;
+      previewPsxAnimStatus.textContent = `Frame ${fi + 1}/${animClip.frames.length} · ${tail}`;
+    }
+  }
+
+  function applyAnimModeFromUi() {
+    if (!mesh.isGroup) return;
+    const v = previewPsxAnimMode.value;
+    animMode = v === "demo" ? "demo" : v === "clip" ? "clip" : "off";
+    animPlaying = false;
+    previewPsxAnimPlay.textContent = "Play";
+    previewPsxAnimPlay.disabled = animMode === "off";
+    if (animMode === "off") {
+      restorePartBindPose(mesh);
+      lastAnimTs = 0;
+    } else {
+      ensurePartBindPoseUserData(mesh);
+      lastAnimTs = 0;
+      animFrameIndex = 0;
+      animTime = 0;
+      if (animMode === "clip" && animClip) {
+        applyPsxAnimClipFrame(THREE, mesh, animClip, 0);
+        previewPsxAnimFrame.value = "0";
+      }
+    }
+    syncAnimStatusUi();
+  }
+
+  function animTickStep(nowMs) {
+    if (!mesh.isGroup) return;
+    if (animMode === "off") return;
+    if (lastAnimTs === 0) lastAnimTs = nowMs;
+    const dt = (nowMs - lastAnimTs) / 1000;
+    lastAnimTs = nowMs;
+    ensurePartBindPoseUserData(mesh);
+    if (animMode === "demo") {
+      if (animPlaying) animTime += dt;
+      applyDemoRigidPartWave(THREE, mesh, animTime);
+    } else if (animMode === "clip" && animClip) {
+      if (animPlaying) {
+        animFrameIndex += dt * animFps;
+        const n = animClip.frames.length;
+        while (animFrameIndex >= n) animFrameIndex -= n;
+        previewPsxAnimFrame.value = String(Math.floor(animFrameIndex));
+      }
+      applyPsxAnimClipFrame(THREE, mesh, animClip, Math.floor(animFrameIndex));
+    }
+    syncAnimStatusUi();
+  }
+
   const psxFrameState = { rafId: 0 };
   function tick() {
     if (viewMode !== "3d") return;
     psxFrameState.rafId = requestAnimationFrame(tick);
     controls.update();
+    animTickStep(performance.now());
     for (const h of overlayRef.vertNormHelpers) {
       if (h && typeof h.update === "function") h.update();
     }
@@ -2612,11 +2735,6 @@ async function showPsxPreview(data) {
   function setViewMode(next) {
     const isUv = next === "uv" && hasTextured && parsed.textured;
     viewMode = isUv ? "uv" : "3d";
-    try {
-      localStorage.setItem(STORAGE_PSX_VIEW_MODE, viewMode);
-    } catch {
-      /* ignore */
-    }
     syncPsxViewModeUi();
     if (viewMode === "uv") {
       cancelAnimationFrame(psxFrameState.rafId);
@@ -2702,15 +2820,8 @@ async function showPsxPreview(data) {
   previewPsxDebugMode.value = initialMode;
   applyDebugMode(initialMode);
 
-  /** @type {"3d" | "uv"} */
-  let initialView = "3d";
-  try {
-    const sv = localStorage.getItem(STORAGE_PSX_VIEW_MODE);
-    if (sv === "uv" && hasTextured && parsed.textured) initialView = "uv";
-  } catch {
-    /* ignore */
-  }
-  setViewMode(initialView);
+  /* Always start in 3D mesh view; UV mode is session-only (not persisted — avoids "stuck" on UV). */
+  setViewMode("3d");
 
   if (usePartGroup) {
     previewPsxPartsAside.classList.remove("is-hidden");
@@ -2752,12 +2863,66 @@ async function showPsxPreview(data) {
       },
       { signal: viewModeAbort.signal }
     );
+
+    const optClip = previewPsxAnimMode.querySelector('option[value="clip"]');
+    if (optClip) {
+      optClip.disabled = !animClip;
+      optClip.title = animClip
+        ? animScanNotes
+        : "THPS1/2 animation bytes are undocumented — heuristic scan found no matching block";
+    }
+    previewPsxAnimRow.classList.remove("is-hidden");
+    previewPsxAnimMode.value = "off";
+    animMode = "off";
+    animPlaying = false;
+    previewPsxAnimPlay.textContent = "Play";
+    previewPsxAnimPlay.disabled = true;
+    if (animClip) {
+      previewPsxAnimFrame.min = "0";
+      previewPsxAnimFrame.max = String(animClip.frames.length - 1);
+      previewPsxAnimFrame.value = "0";
+      previewPsxAnimFrame.disabled = false;
+    } else {
+      previewPsxAnimFrame.min = "0";
+      previewPsxAnimFrame.max = "0";
+      previewPsxAnimFrame.value = "0";
+      previewPsxAnimFrame.disabled = true;
+    }
+    previewPsxAnimStatus.textContent = animScanNotes
+      ? animScanNotes.slice(0, 220) + (animScanNotes.length > 220 ? "…" : "")
+      : "";
+
+    previewPsxAnimMode.addEventListener("change", applyAnimModeFromUi, { signal: viewModeAbort.signal });
+    previewPsxAnimPlay.addEventListener(
+      "click",
+      () => {
+        if (!mesh.isGroup) return;
+        if (animMode === "off") return;
+        animPlaying = !animPlaying;
+        previewPsxAnimPlay.textContent = animPlaying ? "Pause" : "Play";
+        lastAnimTs = 0;
+      },
+      { signal: viewModeAbort.signal }
+    );
+    previewPsxAnimFrame.addEventListener(
+      "input",
+      () => {
+        if (!animClip || animMode !== "clip") return;
+        animFrameIndex = Number(previewPsxAnimFrame.value);
+        animPlaying = false;
+        previewPsxAnimPlay.textContent = "Play";
+        applyPsxAnimClipFrame(THREE, mesh, animClip, Math.floor(animFrameIndex));
+        syncAnimStatusUi();
+      },
+      { signal: viewModeAbort.signal }
+    );
   } else {
     previewPsxPartsAside.classList.add("is-hidden");
     previewPsxPartList.replaceChildren();
     previewPsxPartsAside.classList.remove("is-collapsed");
     previewPsxPartList.hidden = false;
     previewPsxPartsToggle.setAttribute("aria-expanded", "true");
+    previewPsxAnimRow.classList.add("is-hidden");
   }
 
   /** @type {import("three").BufferGeometry[]} */

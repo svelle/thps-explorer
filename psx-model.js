@@ -672,7 +672,7 @@ function readModelTablePtrs(dv, tableOff, fileLen) {
  * @param {number} ptr
  * @param {number} fileLen
  */
-function isSaneModelBlob(dv, ptr, fileLen) {
+export function isSaneModelBlob(dv, ptr, fileLen) {
   if (ptr < 8 || ptr + 28 > fileLen) return false;
   const nv = dv.getUint16(ptr + 2, true);
   const np = dv.getUint16(ptr + 4, true);
@@ -683,6 +683,31 @@ function isSaneModelBlob(dv, ptr, fileLen) {
   const pEnd = vEnd + np * 8;
   if (pEnd > fileLen) return false;
   return true;
+}
+
+/**
+ * Byte offset immediately after the last face record of a model blob, or -1 if not parseable.
+ * @param {DataView} dv
+ * @param {number} ptr
+ * @param {number} fileLen
+ */
+export function getModelBlobEndOffset(dv, ptr, fileLen) {
+  if (ptr < 8 || ptr + 28 > fileLen) return -1;
+  const modelUnknown = dv.getUint16(ptr, true);
+  const nv = dv.getUint16(ptr + 2, true);
+  const np = dv.getUint16(ptr + 4, true);
+  const nf = dv.getUint16(ptr + 6, true);
+  if (nv > 20000 || np > 20000 || nf > 50000 || nv === 0 || nf === 0) return -1;
+  let o = ptr + 28 + nv * 8 + np * 8;
+  if (o > fileLen) return -1;
+  let facesParsed = 0;
+  while (facesParsed < nf && o + 8 <= fileLen) {
+    const f = readPsxFaceRecord(dv, o, nv, modelUnknown, fileLen);
+    if (!f) break;
+    o += f.flen;
+    facesParsed++;
+  }
+  return o;
 }
 
 /**
@@ -707,7 +732,7 @@ function countInBoundsModelPtrs(table, fileLen) {
  * @param {number} fileLen
  * @returns {{ table: { ptrs: number[], modelCount: number }, tableOff: number, validPtrs: number, layoutDesc: string } | null}
  */
-function resolveModelTableForDiagnostics(dv, fileLen) {
+export function resolveModelTableForDiagnostics(dv, fileLen) {
   /** @type {{ table: { ptrs: number[], modelCount: number }; tableOff: number; validPtrs: number; layoutDesc: string } | null} */
   let best = null;
 
