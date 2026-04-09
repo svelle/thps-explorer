@@ -7,267 +7,146 @@ import {
   COMPRESSED_ZLIB,
   UNCOMPRESSED,
   loadFflate,
-} from "./pkr.js";
-import { parsePrk, hexBytes } from "./prk.js";
+} from "../../pkr.js";
+import { parsePrk, hexBytes } from "../../prk.js";
 import {
   parsePsxLevelGeometry,
   dumpPsxCharacterPadDiagnostics,
   PSX_CHARACTER_ASSEMBLY_STORAGE_KEY,
-} from "./psx-model.js";
-import { parsePsxExternalTextureSource } from "./psx-textures.js";
+} from "../../psx-model.js";
+import { parsePsxExternalTextureSource } from "../../psx-textures.js";
 
-/** @type {ArrayBuffer | null} */
-let currentBuffer = null;
-/** @type {ReturnType<typeof parsePkr> | null} */
-let currentArchive = null;
-/** @type {string} */
-let currentFileName = "";
-/** @type {"archive" | "prk"} */
-let currentLoadKind = "archive";
-let selectedDirIndex = -1;
-let selectedFileIndex = -1;
+import { initDomRefs, getDom } from "./dom.js";
+import { state } from "./state.js";
+import {
+  STORAGE_WAV_AUTOPLAY,
+  STORAGE_FILE_VIEW,
+  STORAGE_INSPECTOR_WIDTH,
+  STORAGE_BMP_FIT,
+  STORAGE_AUTO_RESTORE,
+  STORAGE_PSX_DEBUG_MODE,
+  STORAGE_PSX_SURFACE_MODE,
+  STORAGE_INSPECTOR_TAB,
+  HISTORY_DB_NAME,
+  HISTORY_DB_VER,
+  HISTORY_META,
+  HISTORY_MAX_ENTRIES,
+  INSPECTOR_WIDTH_MIN,
+  INSPECTOR_WIDTH_MAX,
+  DEFAULT_PREVIEW_HINT,
+  MAX_FULL_HEX_COPY,
+  TILE_BMP_THUMB_MAX_BYTES,
+  TILE_PSX_THUMB_MAX_BYTES,
+  PSX_TILE_THUMB_PX,
+  THUMB_LOAD_CAP,
+} from "./storage-keys.js";
+import {
+  getLevelBundleForEntry,
+  resolveAutoPsxTextureSource,
+  describeLevelBundleRole,
+} from "./level-bundle.js";
+import {
+  clearAutoPsxTextureSource,
+  getActivePsxTextureSource,
+  setCurrentPsxExportTextures,
+  updatePsxExternalSourceLabel,
+  updatePsxTextureExportState,
+} from "./psx-texture-source.js";
+import { downloadIconSvg, folderZipIconSvg } from "./icons.js";
+import {
+  nf,
+  formatBytes,
+  formatHexByte,
+  formatHexU32,
+  formatHex,
+  tryUtf8Preview,
+  escapeHtml,
+  formatRecentTime,
+} from "./format.js";
 
-const $ = (id) => {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing #${id}`);
-  return el;
-};
-
-/** Material “save / download” glyph (same path as Google Material Symbols). */
-const DOWNLOAD_ICON_PATH_D =
-  "M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z";
-
-/**
- * @param {string} [className]
- */
-function downloadIconSvg(className) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  svg.setAttribute("viewBox", "0 -960 960 960");
-  svg.setAttribute("width", "24");
-  svg.setAttribute("height", "24");
-  svg.setAttribute("fill", "currentColor");
-  svg.setAttribute("aria-hidden", "true");
-  if (className) svg.setAttribute("class", className);
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", DOWNLOAD_ICON_PATH_D);
-  svg.appendChild(path);
-  return svg;
-}
-
-/** Folder → ZIP (Material-style “save to archive” glyph). */
-const FOLDER_ZIP_ICON_PATH_D =
-  "m720-120 160-160-56-56-64 64v-167h-80v167l-64-64-56 56 160 160ZM560 0v-80h320V0H560ZM240-160q-33 0-56.5-23.5T160-240v-560q0-33 23.5-56.5T240-880h280l240 240v121h-80v-81H480v-200H240v560h240v80H240Zm0-80v-560 560Z";
-
-/**
- * @param {string} [className]
- */
-function folderZipIconSvg(className) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  svg.setAttribute("viewBox", "0 -960 960 960");
-  svg.setAttribute("width", "24");
-  svg.setAttribute("height", "24");
-  svg.setAttribute("fill", "currentColor");
-  svg.setAttribute("aria-hidden", "true");
-  if (className) svg.setAttribute("class", className);
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", FOLDER_ZIP_ICON_PATH_D);
-  svg.appendChild(path);
-  return svg;
-}
-
-const fileInput = $("file-input");
-const openArchiveLabel = /** @type {HTMLLabelElement | null} */ (fileInput.closest("label"));
-const skipCrc = $("skip-crc");
-const welcomeEl = $("welcome");
-const workspaceEl = $("workspace");
-const welcomeDrop = $("welcome-drop");
-const archiveSummary = $("archive-summary");
-const summaryFilename = $("summary-filename");
-const summaryFormat = $("summary-format");
-const summaryStats = $("summary-stats");
-const navFolderCount = $("nav-folder-count");
-const folderTitle = $("folder-title");
-const folderSubtitle = $("folder-subtitle");
-const fileFilter = $("file-filter");
-const fileTypeFilterBtn = $("file-type-filter-btn");
-const fileTypeFilterLabel = $("file-type-filter-btn-label");
-const fileTypeFilterPanel = $("file-type-filter-panel");
-const fileTypeFilterWrap = $("file-type-filter-wrap");
-const treeEl = $("tree");
-const filesBody = $("files-body");
-const filesTiles = $("files-tiles");
-const filesListPanel = $("files-list-panel");
-const filesTilePanel = $("files-tile-panel");
-const tableShell = $("files-table-shell");
-const viewModeListBtn = $("view-mode-list");
-const viewModeTilesBtn = $("view-mode-tiles");
-const inspectorResizeHandle = $("inspector-resize-handle");
-
-function getInspectorPanel() {
-  return workspaceEl.querySelector(".workspace__inspector");
-}
-const detailEl = $("detail");
-const previewBlock = $("preview-block");
-const previewHomeAnchor = $("preview-home-anchor");
-const previewEl = $("preview");
-const previewHint = $("preview-hint");
-const previewAudioWrap = $("preview-audio-wrap");
-const previewAudio = $("preview-audio");
-const previewVolumeRange = $("preview-volume-range");
-const previewAutoplay = $("preview-autoplay");
-const previewPrkWrap = $("preview-prk-wrap");
-const previewPrkColorMode = /** @type {HTMLSelectElement} */ ($("preview-prk-color-mode"));
-const previewPrkSummary = $("preview-prk-summary");
-const previewPrkGrid = $("preview-prk-grid");
-const previewPrkSelection = $("preview-prk-selection");
-const previewPrkGaps = $("preview-prk-gaps");
-const previewImageWrap = $("preview-image-wrap");
-const previewImage = $("preview-image");
-const previewImageToolbar = $("preview-image-toolbar");
-const previewBmpFit = $("preview-bmp-fit");
-const previewPopoutBtn = /** @type {HTMLButtonElement} */ ($("preview-popout"));
-const previewPopoutLabel = $("preview-popout-label");
-const previewCopyBtn = $("preview-copy");
-const previewPsxWrap = $("preview-psx-wrap");
-const previewPsxCanvas = /** @type {HTMLCanvasElement} */ ($("preview-psx-canvas"));
-const previewPsxDebugMode = /** @type {HTMLSelectElement} */ ($("preview-psx-debug-mode"));
-const previewPsxTextured = /** @type {HTMLInputElement} */ ($("preview-psx-textured"));
-const previewPsxAssemble = /** @type {HTMLInputElement} */ ($("preview-psx-assemble"));
-const previewPsxPadReport = /** @type {HTMLButtonElement} */ ($("preview-psx-pad-report"));
-const previewPsxSourceBtn = /** @type {HTMLButtonElement} */ ($("preview-psx-source-btn"));
-const previewPsxExportTextureBtn = /** @type {HTMLButtonElement} */ ($("preview-psx-export-texture"));
-const previewPsxSourceInput = /** @type {HTMLInputElement} */ ($("preview-psx-source-input"));
-const previewPsxSourceName = $("preview-psx-source-name");
-
-/** Last opened `.psx` entry bytes (for pad diagnostics). */
-let lastPsxPreviewBytes = /** @type {Uint8Array | null} */ (null);
-
-/** @type {string | null} */
-let previewAudioObjectUrl = null;
-/** @type {string | null} */
-let previewImageObjectUrl = null;
-/** Text sent to clipboard for text/hex previews (may be full hex for smaller binaries). */
-let previewClipboardText = "";
-/** @type {{ parsed: ReturnType<typeof parsePrk>, colorMode: string, selectedIndex: number } | null} */
-let prkPreviewState = null;
-/** @type {import("./psx-textures.js").PsxTextureSource | null} */
-let externalPsxTextureSource = null;
-let externalPsxTextureSourceName = "";
-/** @type {import("./psx-textures.js").PsxTextureSource | null} */
-let autoPsxTextureSource = null;
-let autoPsxTextureSourceName = "";
-/** @type {import("./psx-textures.js").PsxDecodedTexture[]} */
-let currentPsxExportTextures = [];
-/** @type {Map<string, import("./psx-textures.js").PsxTextureSource | null>} */
-const autoPsxTextureCache = new Map();
-
-const STORAGE_WAV_AUTOPLAY = "pkr-explorer-wav-autoplay";
-const STORAGE_FILE_VIEW = "pkr-explorer-file-view";
-const STORAGE_INSPECTOR_WIDTH = "pkr-explorer-inspector-width";
-const STORAGE_BMP_FIT = "pkr-explorer-bmp-fit-frame";
-const STORAGE_AUTO_RESTORE = "pkr-explorer-auto-restore";
-const STORAGE_PSX_DEBUG_MODE = "pkr-explorer-psx-debug-mode";
-const STORAGE_PSX_SURFACE_MODE = "pkr-explorer-psx-surface-mode";
-
-const HISTORY_DB_NAME = "pkr-explorer-history";
-/** v2: metadata + FileSystemFileHandle only (no full file copies in IndexedDB). */
-const HISTORY_DB_VER = 2;
-const HISTORY_META = "meta";
-const HISTORY_MAX_ENTRIES = 10;
-
-const INSPECTOR_WIDTH_MIN = 220;
-const INSPECTOR_WIDTH_MAX = 720;
-
-/** @type {"list" | "tiles"} */
-let fileViewMode = "list";
-
-/** @typedef {'name'|'compression'|'size'|'archive'|'offset'} FileSortKey */
-
-/** @type {{ key: FileSortKey, dir: 'asc' | 'desc' }} */
-let fileListSort = { key: "name", dir: "asc" };
-
-/**
- * Active file-type filter: empty = all types. Otherwise OR of `noext` and/or extension keys (e.g. `.bmp`).
- * @type {Set<string>}
- */
-const activeFileTypeSet = new Set();
-
-/** When true, BMP preview scales to the largest size that fits the preview pane. */
-let bmpFitToFrame = true;
-
-function applyBmpPreviewLayout() {
-  previewImageWrap.classList.toggle("preview-image-wrap--fit", bmpFitToFrame);
-  previewImageWrap.classList.toggle("preview-image-wrap--native", !bmpFitToFrame);
-  previewBmpFit.checked = bmpFitToFrame;
-}
-
-const DEFAULT_PREVIEW_HINT = "Hex or plain text (first portion of the file).";
-
-/** Cap for generating full hex into clipboard (avoid huge strings). */
-const MAX_FULL_HEX_COPY = 512 * 1024;
-
-/** Skip tile thumbnails above this uncompressed size (decompress + decode cost). */
-const TILE_BMP_THUMB_MAX_BYTES = 8 * 1024 * 1024;
-/** PSX mesh thumbs: parse + headless WebGL (no external texture lib in grid). */
-const TILE_PSX_THUMB_MAX_BYTES = 8 * 1024 * 1024;
-/** Render target pixel size for `.psx` grid thumbnails (displayed via CSS in tile). */
-const PSX_TILE_THUMB_PX = 128;
-
-const THUMB_LOAD_CAP = 5;
-
-/** @type {Promise<typeof import("three")> | null} */
-let threeThumbImportPromise = null;
-
-/** @returns {Promise<typeof import("three")>} */
-function getThreeForThumb() {
-  if (!threeThumbImportPromise) {
-    threeThumbImportPromise = import("three");
-  }
-  return threeThumbImportPromise;
-}
-
-/** Blob URLs for BMP tile previews (revoked when the grid is rebuilt). */
-const tileThumbObjectUrls = new Set();
-
-/** @type {IntersectionObserver | null} */
-let tileThumbObserver = null;
-
-let activeThumbLoads = 0;
-/** @type {Array<() => void>} */
-const thumbSlotWaiters = [];
-
-const statusEl = $("status");
-const fileActions = $("file-actions");
-const btnDownload = $("btn-download");
-const helpDialog = $("help-dialog");
-const previewPopoutDialog = /** @type {HTMLDialogElement} */ ($("preview-popout-dialog"));
-const previewPopoutSlot = $("preview-popout-slot");
-const previewPopoutClose = $("preview-popout-close");
-const btnHelp = $("btn-help");
-const welcomeHelp = $("welcome-help");
-const helpClose = $("help-close");
-const recentWrap = $("recent-wrap");
-const recentList = $("recent-list");
-const recentAutoRestore = $("recent-auto-restore");
-const recentClear = $("recent-clear");
-
-const PREVIEW_HEX_MAX = 256;
-const PREVIEW_TEXT_MAX = 8192;
-let previewIsPoppedOut = false;
-
-const nf = new Intl.NumberFormat(undefined);
-
-/**
- * @param {number} n
- */
-function formatBytes(n) {
-  if (n < 1024) return `${nf.format(n)} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+initDomRefs();
+const {
+  fileInput,
+  skipCrc,
+  welcomeEl,
+  workspaceEl,
+  welcomeDrop,
+  archiveSummary,
+  summaryFilename,
+  summaryFormat,
+  summaryStats,
+  navFolderCount,
+  folderTitle,
+  folderSubtitle,
+  fileFilter,
+  fileTypeFilterBtn,
+  fileTypeFilterLabel,
+  fileTypeFilterPanel,
+  fileTypeFilterWrap,
+  treeEl,
+  filesBody,
+  filesTiles,
+  filesListPanel,
+  filesTilePanel,
+  tableShell,
+  viewModeListBtn,
+  viewModeTilesBtn,
+  inspectorResizeHandle,
+  detailEl,
+  inspectorFileTitle,
+  inspectorFileKind,
+  inspectorPaneActions,
+  tabInspectorPreview,
+  tabInspectorDetails,
+  panelInspectorPreview,
+  panelInspectorDetails,
+  previewPsxStatsHud,
+  previewPsxToolbarEl,
+  previewBlock,
+  previewHomeAnchor,
+  previewEl,
+  previewHint,
+  previewAudioWrap,
+  previewAudio,
+  previewVolumeRange,
+  previewAutoplay,
+  previewPrkWrap,
+  previewPrkColorMode,
+  previewPrkSummary,
+  previewPrkGrid,
+  previewPrkSelection,
+  previewPrkGaps,
+  previewImageWrap,
+  previewImage,
+  previewImageToolbar,
+  previewBmpFit,
+  previewPopoutBtn,
+  previewPopoutLabel,
+  previewCopyBtn,
+  previewPsxWrap,
+  previewPsxCanvas,
+  previewPsxDebugMode,
+  previewPsxTextured,
+  previewPsxAssemble,
+  previewPsxPadReport,
+  previewPsxSourceBtn,
+  previewPsxExportTextureBtn,
+  previewPsxSourceInput,
+  previewPsxSourceName,
+  statusEl,
+  btnDownload,
+  helpDialog,
+  previewPopoutDialog,
+  previewPopoutSlot,
+  previewPopoutClose,
+  navDocs,
+  welcomeHelp,
+  helpClose,
+  recentWrap,
+  recentList,
+  recentAutoRestore,
+  recentClear,
+} = getDom();
 
 /**
  * @param {string} fileName
@@ -294,26 +173,69 @@ function createStandalonePrkArchive(fileName, byteLength) {
   };
 }
 
-/**
- * @param {number} value
- */
-function formatHexByte(value) {
-  return `0x${value.toString(16).padStart(2, "0")}`;
-}
-
-/**
- * @param {number} value
- */
-function formatHexU32(value) {
-  return `0x${value.toString(16).padStart(8, "0")}`;
-}
-
 /** Lowercase extension including leading dot, or `""` if none. */
 function getFileExtension(filename) {
   const base = filename.replace(/^.*[/\\]/, "");
   const i = base.lastIndexOf(".");
   if (i <= 0 || i === base.length - 1) return "";
   return base.slice(i).toLowerCase();
+}
+
+/** Uppercase ext for display (e.g. `.PSX`), or `—` if absent. */
+function formatFileExtDisplay(filename) {
+  const ext = getFileExtension(filename);
+  if (!ext) return "—";
+  return ext.toUpperCase();
+}
+
+/**
+ * @param {import("../../pkr.js").PkrFileEntry} entry
+ */
+function inspectorKindLabel(entry) {
+  const base = entry.name.replace(/^.*[/\\]/, "");
+  const lower = base.toLowerCase();
+  if (lower.endsWith(".psx")) return "PSX mesh";
+  if (lower.endsWith(".psh")) return "PSX skeleton";
+  if (lower.endsWith(".prk")) return "PRK park";
+  if (lower.endsWith(".wav")) return "WAV audio";
+  if (lower.endsWith(".bmp")) return "BMP image";
+  if (lower.endsWith(".png")) return "PNG image";
+  if (lower.endsWith(".lua")) return "Lua";
+  if (lower.endsWith(".json")) return "JSON";
+  if (lower.endsWith(".trg")) return "TRG triggers";
+  const ext = getFileExtension(entry.name);
+  if (!ext) return "Binary";
+  return `${ext.replace(".", "").toUpperCase()} data`;
+}
+
+/**
+ * @param {"preview" | "details"} which
+ * @param {boolean} [persist]
+ */
+function setInspectorTab(which, persist = true) {
+  const isPreview = which === "preview";
+  tabInspectorPreview.setAttribute("aria-selected", isPreview ? "true" : "false");
+  tabInspectorDetails.setAttribute("aria-selected", isPreview ? "false" : "true");
+  panelInspectorPreview.hidden = !isPreview;
+  panelInspectorDetails.hidden = isPreview;
+  if (persist) {
+    try {
+      localStorage.setItem(STORAGE_INSPECTOR_TAB, which);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * @returns {"file-tile__hero--cyan" | "file-tile__hero--orange" | "file-tile__hero--lime"}
+ */
+function fileTileHeroClass(filename) {
+  const ext = getFileExtension(filename);
+  if ([".lua", ".prk", ".json"].includes(ext)) return "file-tile__hero--orange";
+  if ([".pkr", ".pak", ".cat"].includes(ext)) return "file-tile__hero--lime";
+  if ([".psx", ".psh", ".bmp", ".wav", ".png", ".tex"].includes(ext)) return "file-tile__hero--cyan";
+  return "file-tile__hero--cyan";
 }
 
 /** Effective on-disk size for this entry (compressed payload vs stored). */
@@ -347,7 +269,7 @@ function compressionUi(entry) {
  */
 function getSortedFileDisplayOrder(dir) {
   const rows = dir.files.map((entry, originalIndex) => ({ entry, originalIndex }));
-  const { key, dir: dirn } = fileListSort;
+  const { key, dir: dirn } = state.fileListSort;
   const mul = dirn === "asc" ? 1 : -1;
 
   rows.sort((a, b) => {
@@ -370,6 +292,11 @@ function getSortedFileDisplayOrder(dir) {
         break;
       case "offset":
         c = a.entry.offset - b.entry.offset;
+        break;
+      case "ext":
+        c = getFileExtension(a.entry.name).localeCompare(getFileExtension(b.entry.name), undefined, {
+          sensitivity: "base",
+        });
         break;
       default:
         c = 0;
@@ -394,18 +321,20 @@ function syncFileSortHeaderUi() {
     if (!th || !sk) return;
     const label =
       sk === "name"
-        ? "File name"
+        ? "Filename"
         : sk === "compression"
-          ? "Compression"
-          : sk === "size"
-            ? "Size"
-            : sk === "archive"
-              ? "In archive"
-              : sk === "offset"
-                ? "Offset"
-                : sk;
-    if (fileListSort.key === sk) {
-      const asc = fileListSort.dir === "asc";
+          ? "Type"
+          : sk === "ext"
+            ? "Ext"
+            : sk === "size"
+              ? "Size"
+              : sk === "archive"
+                ? "Packed"
+                : sk === "offset"
+                  ? "Offset"
+                  : sk;
+    if (state.fileListSort.key === sk) {
+      const asc = state.fileListSort.dir === "asc";
       th.classList.add(asc ? "is-sorted-asc" : "is-sorted-desc");
       th.setAttribute("aria-sort", asc ? "ascending" : "descending");
       btn.title = `Sorted ${asc ? "A→Z / low→high" : "Z→A / high→low"} — click to reverse`;
@@ -419,46 +348,6 @@ function syncFileSortHeaderUi() {
       btn.setAttribute("aria-label", `${label}, sort`);
     }
   });
-}
-
-/**
- * @param {Uint8Array} bytes
- * @param {number} maxBytes
- */
-function formatHex(bytes, maxBytes = PREVIEW_HEX_MAX) {
-  const n = Math.min(bytes.length, maxBytes);
-  const lines = [];
-  for (let i = 0; i < n; i += 16) {
-    const chunk = bytes.subarray(i, i + 16);
-    const hex = [...chunk].map((b) => b.toString(16).padStart(2, "0")).join(" ");
-    const ascii = [...chunk]
-      .map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : "."))
-      .join("");
-    lines.push(`${i.toString(16).padStart(8, "0")}  ${hex.padEnd(48, " ")}  ${ascii}`);
-  }
-  if (bytes.length > n) {
-    lines.push(`… ${nf.format(bytes.length - n)} more bytes`);
-  }
-  return lines.join("\n");
-}
-
-/**
- * @param {Uint8Array} bytes
- */
-function tryUtf8Preview(bytes) {
-  if (bytes.length > PREVIEW_TEXT_MAX) return null;
-  try {
-    const s = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if ([...s].some((ch) => {
-      const c = ch.codePointAt(0);
-      return c !== undefined && (c < 0x20 || c === 0x7f) && c !== 0x09 && c !== 0x0a && c !== 0x0d;
-    })) {
-      return null;
-    }
-    return s;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -479,13 +368,13 @@ function downloadBasename(dir, file) {
  * @param {number} fi
  */
 async function downloadFileEntry(di, fi) {
-  if (!currentArchive || !currentBuffer || di < 0 || fi < 0) return;
-  const dir = currentArchive.dirs[di];
+  if (!state.currentArchive || !state.currentBuffer || di < 0 || fi < 0) return;
+  const dir = state.currentArchive.dirs[di];
   const entry = dir.files[fi];
   const skip = skipCrc.checked;
   setStatus(`Downloading ${entry.name}…`);
   try {
-    const data = await extractEntry(currentBuffer, entry);
+    const data = await extractEntry(state.currentBuffer, entry);
     const hasCrc = entry.crc != null;
     if (hasCrc && !skip && !verifyCrc(entry, data)) {
       setStatus(`CRC mismatch for ${entry.name} — enable Skip CRC or fix the archive.`);
@@ -568,8 +457,8 @@ function zipEntryPath(dirName, fileName) {
  * @param {number} di
  */
 async function downloadFolderZip(di) {
-  if (!currentArchive || !currentBuffer || di < 0 || di >= currentArchive.dirs.length) return;
-  const dir = currentArchive.dirs[di];
+  if (!state.currentArchive || !state.currentBuffer || di < 0 || di >= state.currentArchive.dirs.length) return;
+  const dir = state.currentArchive.dirs[di];
   if (dir.files.length === 0) {
     setStatus("Folder is empty — nothing to zip.");
     return;
@@ -617,7 +506,7 @@ async function downloadFolderZip(di) {
     for (let i = 0; i < dir.files.length; i++) {
       const entry = dir.files[i];
       setStatus(`Zipping ${dir.name}… ${nf.format(i + 1)}/${nf.format(dir.files.length)}`);
-      const data = await extractEntry(currentBuffer, entry);
+      const data = await extractEntry(state.currentBuffer, entry);
       const hasCrc = entry.crc != null;
       if (hasCrc && !skip && !verifyCrc(entry, data)) {
         throw new Error(`CRC mismatch for ${entry.name} (try Skip CRC or fix the entry)`);
@@ -651,29 +540,29 @@ function setStatus(msg) {
 }
 
 function updatePreviewPopoutUi() {
-  previewPopoutLabel.textContent = previewIsPoppedOut ? "Dock" : "Pop out";
-  previewPopoutBtn.title = previewIsPoppedOut
+  previewPopoutLabel.textContent = state.previewIsPoppedOut ? "Dock" : "Pop out";
+  previewPopoutBtn.title = state.previewIsPoppedOut
     ? "Return the preview to the sidebar"
     : "Open the preview in a larger pop-out window";
 }
 
 function dockPreviewBlock() {
-  if (!previewIsPoppedOut) return;
+  if (!state.previewIsPoppedOut) return;
   previewHomeAnchor.before(previewBlock);
-  previewIsPoppedOut = false;
+  state.previewIsPoppedOut = false;
   updatePreviewPopoutUi();
 }
 
 function openPreviewPopout() {
-  if (previewIsPoppedOut) return;
+  if (state.previewIsPoppedOut) return;
   previewPopoutSlot.appendChild(previewBlock);
-  previewIsPoppedOut = true;
+  state.previewIsPoppedOut = true;
   updatePreviewPopoutUi();
   if (!previewPopoutDialog.open) previewPopoutDialog.showModal();
 }
 
 function togglePreviewPopout() {
-  if (previewIsPoppedOut) {
+  if (state.previewIsPoppedOut) {
     if (previewPopoutDialog.open) previewPopoutDialog.close();
     else dockPreviewBlock();
     return;
@@ -689,11 +578,11 @@ function setViewMode(/** @type {'welcome' | 'workspace'} */ mode) {
   const isWelcome = mode === "welcome";
   welcomeEl.classList.toggle("is-hidden", !isWelcome);
   workspaceEl.classList.toggle("is-hidden", isWelcome);
-  archiveSummary.classList.toggle("is-hidden", isWelcome || !currentArchive);
+  archiveSummary.classList.toggle("is-hidden", isWelcome || !state.currentArchive);
 }
 
 function syncFileViewPanels() {
-  const isList = fileViewMode === "list";
+  const isList = state.fileViewMode === "list";
   filesListPanel.classList.toggle("is-hidden", !isList);
   filesTilePanel.classList.toggle("is-hidden", isList);
   viewModeListBtn.classList.toggle("is-active", isList);
@@ -703,23 +592,23 @@ function syncFileViewPanels() {
 }
 
 function setFileViewMode(/** @type {"list" | "tiles"} */ mode) {
-  fileViewMode = mode;
+  state.fileViewMode = mode;
   try {
     localStorage.setItem(STORAGE_FILE_VIEW, mode);
   } catch {
     /* ignore */
   }
   syncFileViewPanels();
-  if (currentArchive && selectedDirIndex >= 0) {
-    renderFilesTable(selectedDirIndex, { preserveFilter: true });
-    highlightSelection(selectedDirIndex, selectedFileIndex);
+  if (state.currentArchive && state.selectedDirIndex >= 0) {
+    renderFilesTable(state.selectedDirIndex, { preserveFilter: true });
+    highlightSelection(state.selectedDirIndex, state.selectedFileIndex);
   }
 }
 
 function revokePreviewAudioUrl() {
-  if (previewAudioObjectUrl) {
-    URL.revokeObjectURL(previewAudioObjectUrl);
-    previewAudioObjectUrl = null;
+  if (state.previewAudioObjectUrl) {
+    URL.revokeObjectURL(state.previewAudioObjectUrl);
+    state.previewAudioObjectUrl = null;
   }
 }
 
@@ -732,9 +621,9 @@ function hideAudioPreview() {
 }
 
 function revokePreviewImageUrl() {
-  if (previewImageObjectUrl) {
-    URL.revokeObjectURL(previewImageObjectUrl);
-    previewImageObjectUrl = null;
+  if (state.previewImageObjectUrl) {
+    URL.revokeObjectURL(state.previewImageObjectUrl);
+    state.previewImageObjectUrl = null;
   }
 }
 
@@ -747,7 +636,7 @@ function hideImagePreview() {
 }
 
 function hidePrkPreview() {
-  prkPreviewState = null;
+  state.prkPreviewState = null;
   previewPrkWrap.classList.add("is-hidden");
   previewPrkSummary.textContent = "";
   previewPrkGrid.replaceChildren();
@@ -756,38 +645,11 @@ function hidePrkPreview() {
   previewPrkGaps.replaceChildren();
 }
 
-/**
- * @typedef {import("three").Object3D} ThreeObject3D
- */
-/** @type {{
- *   state: { rafId: number },
- *   renderer: import("three").WebGLRenderer,
- *   controls: { dispose: () => void; update: () => void },
- *   geoms: import("three").BufferGeometry[],
- *   scene: import("three").Scene,
- *   mesh: import("three").Mesh,
- *   mats: {
- *     shaded: import("three").Material;
- *     wire: import("three").Material;
- *     normal: import("three").Material;
- *     uvWinding: import("three").Material;
- *   },
- *   texMaterials: import("three").Material[] | null,
- *   overlayRef: {
- *     vertNormHelper: ThreeObject3D | null;
- *     edgesLines: import("three").LineSegments | null;
- *     uDirLines: import("three").LineSegments | null;
- *   },
- *   applyDebugMode: (mode: string) => void,
- *   ro: ResizeObserver,
- * } | null} */
-let psxPreviewCtx = null;
-
 function disposePsxPreview() {
-  if (psxPreviewCtx) {
-    cancelAnimationFrame(psxPreviewCtx.state.rafId);
-    psxPreviewCtx.controls.dispose();
-    const { overlayRef, scene } = psxPreviewCtx;
+  if (state.psxPreviewCtx) {
+    cancelAnimationFrame(state.psxPreviewCtx.state.rafId);
+    state.psxPreviewCtx.controls.dispose();
+    const { overlayRef, scene } = state.psxPreviewCtx;
     if (overlayRef.vertNormHelper) {
       scene.remove(overlayRef.vertNormHelper);
       const h = overlayRef.vertNormHelper;
@@ -806,80 +668,38 @@ function disposePsxPreview() {
       overlayRef.uDirLines.material.dispose();
       overlayRef.uDirLines = null;
     }
-    for (const g of psxPreviewCtx.geoms) g.dispose();
-    if (psxPreviewCtx.texMaterials) {
-      for (const m of psxPreviewCtx.texMaterials) {
+    for (const g of state.psxPreviewCtx.geoms) g.dispose();
+    if (state.psxPreviewCtx.texMaterials) {
+      for (const m of state.psxPreviewCtx.texMaterials) {
         if ("map" in m && m.map) m.map.dispose();
         m.dispose();
       }
     }
-    psxPreviewCtx.mats.shaded.dispose();
-    psxPreviewCtx.mats.wire.dispose();
-    psxPreviewCtx.mats.normal.dispose();
-    psxPreviewCtx.mats.uvWinding.dispose();
-    psxPreviewCtx.renderer.dispose();
-    psxPreviewCtx.ro.disconnect();
-    psxPreviewCtx = null;
+    state.psxPreviewCtx.mats.shaded.dispose();
+    state.psxPreviewCtx.mats.wire.dispose();
+    state.psxPreviewCtx.mats.normal.dispose();
+    state.psxPreviewCtx.mats.uvWinding.dispose();
+    state.psxPreviewCtx.renderer.dispose();
+    state.psxPreviewCtx.ro.disconnect();
+    state.psxPreviewCtx = null;
   }
-  currentPsxExportTextures = [];
+  state.currentPsxExportTextures = [];
   updatePsxTextureExportState();
   previewPsxWrap.classList.add("is-hidden");
+  previewPsxToolbarEl.classList.add("is-hidden");
+  previewPsxStatsHud.textContent = "";
 }
 
 function updateCopyButtonState() {
-  previewCopyBtn.disabled = previewClipboardText.length === 0;
-}
-
-function clearAutoPsxTextureSource() {
-  autoPsxTextureSource = null;
-  autoPsxTextureSourceName = "";
-}
-
-function updatePsxExternalSourceLabel() {
-  if (externalPsxTextureSourceName) {
-    previewPsxSourceName.textContent = `Manual: ${externalPsxTextureSourceName}`;
-    return;
-  }
-  if (autoPsxTextureSourceName) {
-    previewPsxSourceName.textContent = `Auto: ${autoPsxTextureSourceName}`;
-    return;
-  }
-  previewPsxSourceName.textContent = "No external texture source";
-}
-
-function updatePsxTextureExportState() {
-  previewPsxExportTextureBtn.disabled = currentPsxExportTextures.length === 0;
-}
-
-function getActivePsxTextureSource() {
-  return externalPsxTextureSource ?? autoPsxTextureSource;
-}
-
-/**
- * @param {ReturnType<typeof parsePsxLevelGeometry> | null} parsed
- */
-function setCurrentPsxExportTextures(parsed) {
-  currentPsxExportTextures = [];
-  if (!parsed?.textured) {
-    updatePsxTextureExportState();
-    return;
-  }
-  const seen = new Set();
-  for (const key of parsed.textured.materialKeys) {
-    const tex = parsed.textured.textureBank.get(key);
-    if (!tex || seen.has(tex.texIndex)) continue;
-    seen.add(tex.texIndex);
-    currentPsxExportTextures.push(tex);
-  }
-  updatePsxTextureExportState();
+  previewCopyBtn.disabled = state.previewClipboardText.length === 0;
 }
 
 function getCurrentPsxTextureExportFilename() {
-  if (!currentArchive || selectedDirIndex < 0 || selectedFileIndex < 0) return "psx-textures.png";
-  const dir = currentArchive.dirs[selectedDirIndex];
-  const entry = dir?.files[selectedFileIndex];
+  if (!state.currentArchive || state.selectedDirIndex < 0 || state.selectedFileIndex < 0) return "psx-textures.png";
+  const dir = state.currentArchive.dirs[state.selectedDirIndex];
+  const entry = dir?.files[state.selectedFileIndex];
   const stem = (entry?.name || "psx-model").replace(/\.[^.]+$/, "");
-  const suffix = currentPsxExportTextures.length === 1 ? "texture" : "textures";
+  const suffix = state.currentPsxExportTextures.length === 1 ? "texture" : "textures";
   return `${downloadBasename(dir?.name || "root", stem)}__${suffix}.png`;
 }
 
@@ -942,14 +762,14 @@ function buildPsxTextureExportCanvas(textures) {
 }
 
 async function exportCurrentPsxTextures() {
-  if (currentPsxExportTextures.length === 0) {
+  if (state.currentPsxExportTextures.length === 0) {
     setStatus("No resolved model textures available to export.");
     return;
   }
   const filename = getCurrentPsxTextureExportFilename();
   try {
     setStatus(`Exporting ${filename}…`);
-    const canvas = buildPsxTextureExportCanvas(currentPsxExportTextures);
+    const canvas = buildPsxTextureExportCanvas(state.currentPsxExportTextures);
     const blob = await canvasToPngBlob(canvas);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -965,8 +785,8 @@ async function exportCurrentPsxTextures() {
 }
 
 function refreshCurrentSelection() {
-  if (currentArchive && currentBuffer && selectedDirIndex >= 0 && selectedFileIndex >= 0) {
-    void showFileDetail(selectedDirIndex, selectedFileIndex);
+  if (state.currentArchive && state.currentBuffer && state.selectedDirIndex >= 0 && state.selectedFileIndex >= 0) {
+    void showFileDetail(state.selectedDirIndex, state.selectedFileIndex);
   }
 }
 
@@ -996,125 +816,6 @@ function isPsxFileName(name) {
 /** Skeleton part enum headers (e.g. `CAMPBPART_*`) paired with skater `.psx` rigs. */
 function isPshFileName(name) {
   return /\.psh$/i.test(name);
-}
-
-/**
- * Supports both `SKHAN.PSX` + `SKHAN_L.PSX` and numbered variants like
- * `SKHAN_2.PSX` + `SKHAN_L2.PSX` + `SKHAN_O2.PSX`.
- *
- * @param {string} name
- * @returns {{ prefix: string, base: string, variant: string, role: "main" | "texture" | "occluded" | "triggers" } | null}
- */
-function parseLevelBundleName(name) {
-  const texture = name.match(/^(.*)_L(\d*)\.psx$/i);
-  if (texture) {
-    const base = texture[1];
-    const variant = texture[2] || "";
-    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "texture" };
-  }
-
-  const occluded = name.match(/^(.*)_O(\d*)\.psx$/i);
-  if (occluded) {
-    const base = occluded[1];
-    const variant = occluded[2] || "";
-    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "occluded" };
-  }
-
-  const trigger = name.match(/^(.*)_T(\d*)\.trg$/i);
-  if (trigger) {
-    const base = trigger[1];
-    const variant = trigger[2] || "";
-    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "triggers" };
-  }
-
-  const main = name.match(/^(.*?)(?:_(\d+))?\.psx$/i);
-  if (main) {
-    const base = main[1];
-    const variant = main[2] || "";
-    return { prefix: variant ? `${base}_${variant}` : base, base, variant, role: "main" };
-  }
-  return null;
-}
-
-/**
- * @param {import("./pkr.js").PkrDir} dir
- * @param {number | null | undefined} index
- */
-function getDirEntryAt(dir, index) {
-  if (index == null || index < 0 || index >= dir.files.length) return null;
-  return { index, entry: dir.files[index] };
-}
-
-/**
- * @param {import("./pkr.js").PkrDir} dir
- * @param {number} fi
- */
-function getLevelBundleForEntry(dir, fi) {
-  const current = dir.files[fi];
-  if (!current) return null;
-  const parsed = parseLevelBundleName(current.name);
-  if (!parsed) return null;
-
-  const byLower = new Map(dir.files.map((entry, index) => [entry.name.toLowerCase(), index]));
-  const variantSuffix = parsed.variant ? `_${parsed.variant}` : "";
-  const textureVariantSuffix = parsed.variant || "";
-  const mainIndex = byLower.get(`${parsed.base}${variantSuffix}.psx`.toLowerCase()) ?? null;
-  const textureIndex =
-    byLower.get(`${parsed.base}_l${textureVariantSuffix}.psx`.toLowerCase()) ?? null;
-  const occludedIndex =
-    byLower.get(`${parsed.base}_o${textureVariantSuffix}.psx`.toLowerCase()) ?? null;
-  const triggerIndex =
-    byLower.get(`${parsed.base}_t${textureVariantSuffix}.trg`.toLowerCase()) ??
-    byLower.get(`${parsed.base}_t.trg`.toLowerCase()) ??
-    null;
-  const hasCompanion =
-    mainIndex != null || textureIndex != null || occludedIndex != null || triggerIndex != null;
-  if (!hasCompanion) return null;
-
-  return {
-    prefix: parsed.prefix,
-    role: parsed.role,
-    main: getDirEntryAt(dir, mainIndex),
-    texture: getDirEntryAt(dir, textureIndex),
-    occluded: getDirEntryAt(dir, occludedIndex),
-    triggers: getDirEntryAt(dir, triggerIndex),
-  };
-}
-
-/**
- * @param {number} di
- * @param {number} fi
- */
-async function resolveAutoPsxTextureSource(di, fi) {
-  clearAutoPsxTextureSource();
-  if (!currentArchive || !currentBuffer) {
-    updatePsxExternalSourceLabel();
-    return null;
-  }
-  const dir = currentArchive.dirs[di];
-  const bundle = dir ? getLevelBundleForEntry(dir, fi) : null;
-  if (!bundle || !bundle.texture || bundle.role === "texture") {
-    updatePsxExternalSourceLabel();
-    return bundle;
-  }
-
-  const cacheKey = `${di}:${bundle.texture.index}:${bundle.texture.entry.offset}:${bundle.texture.entry.uncompressed_size}`;
-  let parsed = autoPsxTextureCache.get(cacheKey);
-  if (parsed === undefined) {
-    try {
-      const bytes = await extractEntry(currentBuffer, bundle.texture.entry);
-      parsed = parsePsxExternalTextureSource(bytes);
-    } catch {
-      parsed = null;
-    }
-    autoPsxTextureCache.set(cacheKey, parsed ?? null);
-  }
-  if (parsed) {
-    autoPsxTextureSource = parsed;
-    autoPsxTextureSourceName = `${dir.name}/${bundle.texture.entry.name}`;
-  }
-  updatePsxExternalSourceLabel();
-  return bundle;
 }
 
 /**
@@ -1176,8 +877,8 @@ function getPrkCellColor(cell, mode) {
 }
 
 function renderPrkSelection() {
-  if (!prkPreviewState) return;
-  const { parsed, selectedIndex } = prkPreviewState;
+  if (!state.prkPreviewState) return;
+  const { parsed, selectedIndex } = state.prkPreviewState;
   const cell = parsed.cells[selectedIndex];
   if (!cell) {
     previewPrkSelection.textContent = "Select a cell.";
@@ -1224,8 +925,8 @@ function renderPrkGapList(parsed) {
 }
 
 function renderPrkGrid() {
-  if (!prkPreviewState) return;
-  const { parsed, colorMode, selectedIndex } = prkPreviewState;
+  if (!state.prkPreviewState) return;
+  const { parsed, colorMode, selectedIndex } = state.prkPreviewState;
   previewPrkGrid.replaceChildren();
   previewPrkGrid.style.setProperty("--prk-cols", String(parsed.width));
   const sizePx = parsed.width >= 60 ? 12 : parsed.width >= 30 ? 14 : 18;
@@ -1244,8 +945,8 @@ function renderPrkGrid() {
       `${hexBytes(cell.raw)}`;
     button.setAttribute("aria-label", `PRK cell ${cell.x}, ${cell.y}`);
     button.addEventListener("click", () => {
-      if (!prkPreviewState) return;
-      prkPreviewState.selectedIndex = cell.index;
+      if (!state.prkPreviewState) return;
+      state.prkPreviewState.selectedIndex = cell.index;
       renderPrkGrid();
       renderPrkSelection();
     });
@@ -1261,7 +962,7 @@ function showPrkPreview(parsed) {
   hideAudioPreview();
   hideImagePreview();
   hidePrkPreview();
-  previewClipboardText = formatPrkSummaryText(parsed);
+  state.previewClipboardText = formatPrkSummaryText(parsed);
   previewEl.classList.add("is-hidden");
   previewEl.textContent = "";
   previewEl.classList.remove("is-idle");
@@ -1269,7 +970,7 @@ function showPrkPreview(parsed) {
   previewHint.textContent =
     "PRK grid inspector — colors show the selected raw byte field; click a cell to inspect its 8-byte record.";
   previewPrkWrap.classList.remove("is-hidden");
-  prkPreviewState = {
+  state.prkPreviewState = {
     parsed,
     colorMode: previewPrkColorMode.value || "slot3",
     selectedIndex: parsed.cells.find((cell) => !cell.isEmpty)?.index ?? 0,
@@ -1280,23 +981,13 @@ function showPrkPreview(parsed) {
   updateCopyButtonState();
 }
 
-/**
- * @param {"main" | "texture" | "occluded" | "triggers"} role
- */
-function describeLevelBundleRole(role) {
-  switch (role) {
-    case "main":
-      return "Main geometry / collision";
-    case "texture":
-      return "Texture library";
-    case "occluded":
-      return "Alternate / occluded mesh";
-    case "triggers":
-      return "Triggers / scripts metadata";
-    default:
-      return role;
-  }
-}
+const BUNDLE_STRIP_ICON_MESH = `<svg class="bundle-strip__icon" xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 -960 960 960" width="16" fill="currentColor" aria-hidden="true"><path d="M120-120v-720l360-180 360 180v720L480-300 120-120Zm80-131 280-126v-543L200-794v543Zm400 0v-543L440-920v543l280 126Z"/></svg>`;
+
+const BUNDLE_STRIP_ICON_TEX = `<svg class="bundle-strip__icon" xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 -960 960 960" width="16" fill="currentColor" aria-hidden="true"><path d="M200-200q-33 0-56.5-23.5T120-280v-400q0-33 23.5-56.5T200-760h560q33 0 56.5 23.5T840-680v400q0 33-23.5 56.5T760-200H200Zm40-80h480v-400H240v400Zm40-80h120l80 120 160-220 200 260v80H280v-240Z"/></svg>`;
+
+const BUNDLE_STRIP_ICON_ALT = `<svg class="bundle-strip__icon" xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 -960 960 960" width="16" fill="currentColor" aria-hidden="true"><path d="M360-240 120-480l240-240 240 240-240 240-240-240Zm240-154 86 86 86-86-86-86-86 86 86 86Z"/></svg>`;
+
+const BUNDLE_STRIP_ICON_TRIG = `<svg class="bundle-strip__icon" xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 -960 960 960" width="16" fill="currentColor" aria-hidden="true"><path d="m468-280 160-320H520v-200L360-480h108v200Zm12 160q-125 0-212.5-87.5T180-420q0-125 87.5-213T480-720q125 0 213 87T880-418q-2 125-90 213t-210 90Z"/></svg>`;
 
 /**
  * @param {HTMLElement} parent
@@ -1306,56 +997,65 @@ function describeLevelBundleRole(role) {
 function appendLevelBundleDetail(parent, di, bundle) {
   const card = document.createElement("div");
   card.className = "detail-card detail-card--stacked";
-  const title = document.createElement("p");
-  title.className = "detail-section-title";
-  title.textContent = "Level bundle";
-  const body = document.createElement("p");
-  body.className = "detail-support";
+
+  const strip = document.createElement("div");
+  strip.className = "bundle-strip";
+
   const autoText = bundle.texture
-    ? externalPsxTextureSource
+    ? state.externalPsxTextureSource
       ? `Manual texture source overrides ${bundle.texture.entry.name}.`
-      : autoPsxTextureSource
+      : state.autoPsxTextureSource
         ? `Preview auto-uses ${bundle.texture.entry.name} for textures.`
         : `${bundle.texture.entry.name} was found but did not parse as a texture source.`
     : "No sibling texture library was found.";
-  body.innerHTML =
-    `Prefix <code>${escapeHtml(bundle.prefix)}</code> · currently viewing <strong>${escapeHtml(describeLevelBundleRole(bundle.role))}</strong>.<br>${escapeHtml(autoText)}`;
 
-  const actions = document.createElement("div");
-  actions.className = "detail-action-row";
-  /** @type {Array<{ label: string, item: { index: number, entry: import("./pkr.js").PkrFileEntry } | null }>} */
-  const items = [
-    { label: "Main .PSX", item: bundle.main },
-    { label: "Textures", item: bundle.texture },
-    { label: "Alt mesh", item: bundle.occluded },
-    { label: "Triggers", item: bundle.triggers },
+  /** @type {Array<{ short: string, icon: string, item: { index: number, entry: import("./pkr.js").PkrFileEntry } | null, aria: string }>} */
+  const slots = [
+    { short: "Mesh", icon: BUNDLE_STRIP_ICON_MESH, item: bundle.main, aria: "Main PSX mesh" },
+    { short: "Tex", icon: BUNDLE_STRIP_ICON_TEX, item: bundle.texture, aria: "Texture library" },
+    { short: "Alt", icon: BUNDLE_STRIP_ICON_ALT, item: bundle.occluded, aria: "Alternate mesh" },
+    { short: "Trg", icon: BUNDLE_STRIP_ICON_TRIG, item: bundle.triggers, aria: "Triggers" },
   ];
-  for (const { label, item } of items) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn--ghost detail-action-btn";
-    if (!item) {
-      btn.disabled = true;
-      btn.textContent = `${label}: missing`;
+  for (const s of slots) {
+    if (s.item) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "bundle-strip__slot bundle-strip__slot--on";
+      const name = s.item.entry.name;
+      const fiBundle = s.item.index;
+      btn.setAttribute("aria-label", `${s.aria}: ${name}`);
+      btn.title = name;
+      btn.innerHTML = `${s.icon}<span>${s.short}</span>`;
+      btn.addEventListener("click", () => selectFileEntry(di, fiBundle));
+      strip.appendChild(btn);
     } else {
-      btn.textContent = `${label}: ${item.entry.name}`;
-      btn.title = item.entry.name;
-      btn.addEventListener("click", () => selectFileEntry(di, item.index));
+      const span = document.createElement("span");
+      span.className = "bundle-strip__slot bundle-strip__slot--missing";
+      span.setAttribute("aria-label", `${s.aria} — missing`);
+      span.innerHTML = `${s.icon}<span>${s.short}</span>`;
+      strip.appendChild(span);
     }
-    actions.appendChild(btn);
   }
-  card.append(title, body, actions);
+
+  const body = document.createElement("p");
+  body.className = "detail-support";
+  body.style.marginTop = "0.5rem";
+  body.innerHTML = `Prefix <code>${escapeHtml(bundle.prefix)}</code> · viewing <strong>${escapeHtml(
+    describeLevelBundleRole(bundle.role)
+  )}</strong>. ${escapeHtml(autoText)}`;
+
+  card.append(strip, body);
   parent.appendChild(card);
 }
 
 function revokeAllTileThumbUrls() {
-  for (const u of tileThumbObjectUrls) URL.revokeObjectURL(u);
-  tileThumbObjectUrls.clear();
+  for (const u of state.tileThumbObjectUrls) URL.revokeObjectURL(u);
+  state.tileThumbObjectUrls.clear();
 }
 
 function ensureTileThumbObserver() {
-  if (tileThumbObserver) return tileThumbObserver;
-  tileThumbObserver = new IntersectionObserver(
+  if (state.tileThumbObserver) return state.tileThumbObserver;
+  state.tileThumbObserver = new IntersectionObserver(
     (entries) => {
       for (const ent of entries) {
         if (!ent.isIntersecting) continue;
@@ -1363,7 +1063,7 @@ function ensureTileThumbObserver() {
         if (tile.classList.contains("is-filtered")) continue;
         const img = tile.querySelector("img.file-tile__thumb[data-pending]");
         if (!img) continue;
-        tileThumbObserver.unobserve(tile);
+        state.tileThumbObserver.unobserve(tile);
         const di = Number(tile.dataset.dirIndex);
         const fi = Number(tile.dataset.fileIndex);
         void withThumbConcurrency(async () => {
@@ -1375,22 +1075,22 @@ function ensureTileThumbObserver() {
     },
     { root: tableShell, rootMargin: "120px", threshold: 0.01 }
   );
-  return tileThumbObserver;
+  return state.tileThumbObserver;
 }
 
 /**
  * @param {() => Promise<void>} fn
  */
 async function withThumbConcurrency(fn) {
-  if (activeThumbLoads >= THUMB_LOAD_CAP) {
-    await new Promise((resolve) => thumbSlotWaiters.push(resolve));
+  if (state.activeThumbLoads >= THUMB_LOAD_CAP) {
+    await new Promise((resolve) => state.thumbSlotWaiters.push(resolve));
   }
-  activeThumbLoads++;
+  state.activeThumbLoads++;
   try {
     await fn();
   } finally {
-    activeThumbLoads--;
-    const next = thumbSlotWaiters.shift();
+    state.activeThumbLoads--;
+    const next = state.thumbSlotWaiters.shift();
     if (next) next();
   }
 }
@@ -1402,11 +1102,11 @@ async function withThumbConcurrency(fn) {
  * @param {number} fi
  */
 async function loadBmpTileThumb(tile, imgEl, di, fi) {
-  if (!currentBuffer || !currentArchive) return;
-  const entry = currentArchive.dirs[di]?.files[fi];
+  if (!state.currentBuffer || !state.currentArchive) return;
+  const entry = state.currentArchive.dirs[di]?.files[fi];
   if (!entry) return;
   try {
-    const data = await extractEntry(currentBuffer, entry);
+    const data = await extractEntry(state.currentBuffer, entry);
     if (
       !tile.isConnected ||
       Number(tile.dataset.dirIndex) !== di ||
@@ -1420,7 +1120,7 @@ async function loadBmpTileThumb(tile, imgEl, di, fi) {
       return;
     }
     const url = URL.createObjectURL(new Blob([data], { type: "image/bmp" }));
-    tileThumbObjectUrls.add(url);
+    state.tileThumbObjectUrls.add(url);
     imgEl.src = url;
     imgEl.removeAttribute("data-pending");
   } catch {
@@ -1432,9 +1132,9 @@ async function loadBmpTileThumb(tile, imgEl, di, fi) {
  * Rebuild tile grid for the open folder so `.psx` thumbnails pick up texture source / mode changes.
  */
 function refreshPsxTileThumbsGrid() {
-  if (fileViewMode !== "tiles" || !currentArchive || selectedDirIndex < 0) return;
-  renderFilesTable(selectedDirIndex, { preserveFilter: true });
-  highlightSelection(selectedDirIndex, selectedFileIndex);
+  if (state.fileViewMode !== "tiles" || !state.currentArchive || state.selectedDirIndex < 0) return;
+  renderFilesTable(state.selectedDirIndex, { preserveFilter: true });
+  highlightSelection(state.selectedDirIndex, state.selectedFileIndex);
 }
 
 /**
@@ -1634,11 +1334,11 @@ async function renderPsxThumbObjectUrl(data) {
  * @param {number} fi
  */
 async function loadPsxTileThumb(tile, imgEl, di, fi) {
-  if (!currentBuffer || !currentArchive) return;
-  const entry = currentArchive.dirs[di]?.files[fi];
+  if (!state.currentBuffer || !state.currentArchive) return;
+  const entry = state.currentArchive.dirs[di]?.files[fi];
   if (!entry) return;
   try {
-    const data = await extractEntry(currentBuffer, entry);
+    const data = await extractEntry(state.currentBuffer, entry);
     if (
       !tile.isConnected ||
       Number(tile.dataset.dirIndex) !== di ||
@@ -1652,7 +1352,7 @@ async function loadPsxTileThumb(tile, imgEl, di, fi) {
       tile.classList.remove("file-tile--with-thumb");
       return;
     }
-    tileThumbObjectUrls.add(url);
+    state.tileThumbObjectUrls.add(url);
     imgEl.src = url;
     imgEl.removeAttribute("data-pending");
   } catch {
@@ -1669,10 +1369,10 @@ function showBmpPreview(data) {
   hideAudioPreview();
   hidePrkPreview();
   hideImagePreview();
-  previewClipboardText = "";
+  state.previewClipboardText = "";
 
-  previewImageObjectUrl = URL.createObjectURL(new Blob([data], { type: "image/bmp" }));
-  previewImage.src = previewImageObjectUrl;
+  state.previewImageObjectUrl = URL.createObjectURL(new Blob([data], { type: "image/bmp" }));
+  previewImage.src = state.previewImageObjectUrl;
   previewImage.alt = `BMP preview (${nf.format(data.length)} bytes)`;
   previewImage.onload = () => {
     previewHint.textContent =
@@ -1727,9 +1427,9 @@ function showWavPreview(data) {
   hideAudioPreview();
   hidePrkPreview();
   hideImagePreview();
-  previewClipboardText = "";
-  previewAudioObjectUrl = URL.createObjectURL(new Blob([data], { type: "audio/wav" }));
-  previewAudio.src = previewAudioObjectUrl;
+  state.previewClipboardText = "";
+  state.previewAudioObjectUrl = URL.createObjectURL(new Blob([data], { type: "audio/wav" }));
+  previewAudio.src = state.previewAudioObjectUrl;
   previewAudio.volume = Number(previewVolumeRange.value);
   previewAudio.load();
 
@@ -1754,12 +1454,12 @@ function showWavPreview(data) {
  * @returns {Promise<boolean>} true if WebGL preview started
  */
 async function showPsxPreview(data) {
-  lastPsxPreviewBytes = data;
+  state.lastPsxPreviewBytes = data;
   disposePsxPreview();
   hideAudioPreview();
   hidePrkPreview();
   hideImagePreview();
-  previewClipboardText = "";
+  state.previewClipboardText = "";
 
   const parsed = parsePsxLevelGeometry(data, getActivePsxTextureSource());
   if (!parsed) return false;
@@ -2135,22 +1835,29 @@ async function showPsxPreview(data) {
   function syncPsxHint() {
     const vertCount = texturedSurface && hasTextured ? texturedVertCount : plainVertCount;
     const triCount = texturedSurface && hasTextured ? texturedTriCount : plainTriCount;
-    let hint = `PSX mesh — ${nf.format(parsed.modelCount)} model part(s), ${nf.format(vertCount)} vertices, ~${nf.format(triCount)} tris`;
-    hint += hintBase;
+    const hudParts = [
+      `${nf.format(vertCount)} vertices`,
+      `~${nf.format(triCount)} tris`,
+    ];
+    if (parsed.modelCount > 1) hudParts.push(`${nf.format(parsed.modelCount)} parts`);
+    previewPsxStatsHud.textContent = hudParts.join(" · ");
+
+    let hint = hintBase;
     if (currentDebugMode === "uv-winding" && uvWindingStats) {
-      hint += ` UV winding debug: green=${nf.format(uvWindingStats.positive)}, red=${nf.format(
+      hint += ` UV winding: green=${nf.format(uvWindingStats.positive)}, red=${nf.format(
         uvWindingStats.negative
       )}, yellow=${nf.format(uvWindingStats.degenerate)} tris.`;
     }
     if (currentDebugMode === "u-dir") {
-      hint += " U direction debug: cyan lines show increasing U per triangle; yellow marks degenerate UVs.";
+      hint +=
+        " U-dir debug: cyan = +U per tri; yellow = degenerate UVs.";
     }
     hint += hasTextured
       ? texturedSurface
-        ? " Textured surface view."
-        : " Untextured surface view."
+        ? " Textured surface."
+        : " Untextured surface."
       : "";
-    previewHint.textContent = hint;
+    previewHint.textContent = hint.trim() || "—";
   }
 
   function applyDebugMode(mode) {
@@ -2230,7 +1937,9 @@ async function showPsxPreview(data) {
   const resize = () => {
     const r = previewPsxWrap.getBoundingClientRect();
     const W = Math.max(180, Math.floor(r.width));
-    const H = Math.max(160, Math.min(520, Math.floor(W * 0.62)));
+    const hintEl = previewPsxWrap.querySelector(".preview-psx-hint");
+    const hintH = hintEl ? Math.ceil(hintEl.getBoundingClientRect().height) + 14 : 44;
+    const H = Math.max(200, Math.floor(r.height - hintH));
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(W, H, false);
     camera.aspect = W / H;
@@ -2238,6 +1947,7 @@ async function showPsxPreview(data) {
   };
 
   previewPsxWrap.classList.remove("is-hidden");
+  previewPsxToolbarEl.classList.remove("is-hidden");
   previewEl.classList.add("is-hidden");
   previewEl.textContent = "";
   previewEl.classList.remove("is-idle");
@@ -2255,7 +1965,7 @@ async function showPsxPreview(data) {
       ? parsed.textured?.textureSource === "external"
         ? ` (external texture .psx resolved via texhash lookup).`
         : ` (embedded 4/8bpp textures + UVs; THPS2X / odd palettes may be incomplete).`
-      : externalPsxTextureSource
+      : state.externalPsxTextureSource
         ? ` (no textures resolved from the current mesh + external texture source).`
         : ` (no texture source resolved for this path).`;
   if (parsed.characterAssembly) {
@@ -2301,7 +2011,7 @@ async function showPsxPreview(data) {
   previewPsxDebugMode.value = initialMode;
   applyDebugMode(initialMode);
 
-  psxPreviewCtx = {
+  state.psxPreviewCtx = {
     state,
     renderer,
     controls,
@@ -2324,7 +2034,7 @@ function setPreviewIdle(message) {
   hideAudioPreview();
   hidePrkPreview();
   hideImagePreview();
-  previewClipboardText = "";
+  state.previewClipboardText = "";
   previewEl.classList.remove("is-hidden");
   previewEl.textContent = message;
   previewEl.classList.add("is-idle");
@@ -2343,7 +2053,7 @@ function setPreviewContent(text, clipboardText = text, hint = DEFAULT_PREVIEW_HI
   hideAudioPreview();
   hidePrkPreview();
   hideImagePreview();
-  previewClipboardText = clipboardText;
+  state.previewClipboardText = clipboardText;
   previewEl.classList.remove("is-hidden");
   previewEl.textContent = text;
   previewEl.classList.remove("is-idle");
@@ -2380,10 +2090,10 @@ function highlightSelection(di, fi) {
 
 /** @param {string} fileName */
 function fileNameMatchesTypeFilter(fileName) {
-  if (activeFileTypeSet.size === 0) return true;
+  if (state.activeFileTypeSet.size === 0) return true;
   const ext = getFileExtension(fileName);
-  if (ext === "") return activeFileTypeSet.has("noext");
-  return activeFileTypeSet.has(ext);
+  if (ext === "") return state.activeFileTypeSet.has("noext");
+  return state.activeFileTypeSet.has(ext);
 }
 
 function applyFileFilter() {
@@ -2419,15 +2129,15 @@ function rebuildFileTypeFilterUi(dir) {
     else byExt.set(e, (byExt.get(e) ?? 0) + 1);
   }
 
-  for (const t of [...activeFileTypeSet]) {
-    if (t === "noext" && noExtCount === 0) activeFileTypeSet.delete(t);
-    else if (t !== "noext" && !byExt.has(t)) activeFileTypeSet.delete(t);
+  for (const t of [...state.activeFileTypeSet]) {
+    if (t === "noext" && noExtCount === 0) state.activeFileTypeSet.delete(t);
+    else if (t !== "noext" && !byExt.has(t)) state.activeFileTypeSet.delete(t);
   }
 
   /** @param {string} token @param {string} labelText */
   function addOption(token, labelText) {
     const isAll = token === "all";
-    const checked = isAll ? activeFileTypeSet.size === 0 : activeFileTypeSet.has(token);
+    const checked = isAll ? state.activeFileTypeSet.size === 0 : state.activeFileTypeSet.has(token);
     const row = document.createElement("label");
     row.className = "file-type-filter-option";
     if (checked) row.classList.add("is-active");
@@ -2461,22 +2171,22 @@ function rebuildFileTypeFilterUi(dir) {
 }
 
 function syncFileTypeFilterButtonLabel() {
-  const n = activeFileTypeSet.size;
+  const n = state.activeFileTypeSet.size;
   if (n === 0) {
-    fileTypeFilterLabel.textContent = "File type";
+    fileTypeFilterLabel.textContent = "FILE_TYPE";
     fileTypeFilterBtn.classList.remove("has-active-filter");
     fileTypeFilterBtn.title = "Filter files by extension in this folder (check one or more types)";
     return;
   }
   fileTypeFilterBtn.classList.add("has-active-filter");
-  const first = [...activeFileTypeSet].sort((a, b) => a.localeCompare(b))[0];
+  const first = [...state.activeFileTypeSet].sort((a, b) => a.localeCompare(b))[0];
   const firstLabel = first === "noext" ? "no extension" : first;
   if (n === 1) {
-    fileTypeFilterLabel.textContent = `Type: ${firstLabel}`;
+    fileTypeFilterLabel.textContent = `TYPE: ${firstLabel}`;
     fileTypeFilterBtn.title = `Showing only ${firstLabel} — open to add or remove types`;
     return;
   }
-  fileTypeFilterLabel.textContent = `Types: ${n}`;
+    fileTypeFilterLabel.textContent = `TYPES: ${n}`;
   fileTypeFilterBtn.title = `Filtering to ${n} types — open to change`;
 }
 
@@ -2488,7 +2198,7 @@ function syncFileTypeFilterPanelCheckboxes() {
     const cb = node.querySelector(".file-type-filter-option__check");
     if (!(cb instanceof HTMLInputElement)) return;
     const isAll = token === "all";
-    const checked = isAll ? activeFileTypeSet.size === 0 : activeFileTypeSet.has(token);
+    const checked = isAll ? state.activeFileTypeSet.size === 0 : state.activeFileTypeSet.has(token);
     cb.checked = checked;
     node.classList.toggle("is-active", checked);
   });
@@ -2496,14 +2206,14 @@ function syncFileTypeFilterPanelCheckboxes() {
 
 /** Visible rows or tiles in DOM order (respects name + type filters). */
 function getVisibleFileElements() {
-  if (fileViewMode === "list") {
+  if (state.fileViewMode === "list") {
     return Array.from(filesBody.querySelectorAll("tr:not(.is-filtered)"));
   }
   return Array.from(filesTiles.querySelectorAll(".file-tile:not(.is-filtered)"));
 }
 
 function scrollFileSelectionIntoView() {
-  if (fileViewMode === "list") {
+  if (state.fileViewMode === "list") {
     filesBody.querySelector("tr.is-selected")?.scrollIntoView({ block: "nearest" });
   } else {
     filesTiles.querySelector(".file-tile.is-selected")?.scrollIntoView({ block: "nearest" });
@@ -2515,9 +2225,9 @@ function scrollFileSelectionIntoView() {
  * @param {number} fi
  */
 function selectFileEntry(di, fi) {
-  if (!currentArchive || di < 0 || fi < 0) return;
-  selectedDirIndex = di;
-  selectedFileIndex = fi;
+  if (!state.currentArchive || di < 0 || fi < 0) return;
+  state.selectedDirIndex = di;
+  state.selectedFileIndex = fi;
   highlightSelection(di, fi);
   void showFileDetail(di, fi);
   scrollFileSelectionIntoView();
@@ -2528,13 +2238,13 @@ function selectFileEntry(di, fi) {
  * @param {number} delta — 1 = next, -1 = previous
  */
 function moveFileSelection(delta) {
-  if (!currentArchive || selectedDirIndex < 0) return;
+  if (!state.currentArchive || state.selectedDirIndex < 0) return;
   const els = getVisibleFileElements();
   if (els.length === 0) return;
   let idx = els.findIndex(
     (el) =>
-      Number(el.dataset.dirIndex) === selectedDirIndex &&
-      Number(el.dataset.fileIndex) === selectedFileIndex
+      Number(el.dataset.dirIndex) === state.selectedDirIndex &&
+      Number(el.dataset.fileIndex) === state.selectedFileIndex
   );
   if (idx < 0) {
     idx = delta > 0 ? 0 : els.length - 1;
@@ -2567,14 +2277,14 @@ function getTilesGridColumnCount(tiles) {
  * @param {"left" | "right" | "up" | "down"} dir
  */
 function moveFileSelectionGrid(dir) {
-  if (!currentArchive || selectedDirIndex < 0) return;
+  if (!state.currentArchive || state.selectedDirIndex < 0) return;
   const els = getVisibleFileElements();
   if (els.length === 0) return;
   const cols = getTilesGridColumnCount(els);
   let idx = els.findIndex(
     (el) =>
-      Number(el.dataset.dirIndex) === selectedDirIndex &&
-      Number(el.dataset.fileIndex) === selectedFileIndex
+      Number(el.dataset.dirIndex) === state.selectedDirIndex &&
+      Number(el.dataset.fileIndex) === state.selectedFileIndex
   );
   if (idx < 0) {
     idx = dir === "right" || dir === "down" ? 0 : els.length - 1;
@@ -2597,7 +2307,7 @@ function moveFileSelectionGrid(dir) {
 
 /** @param {boolean} toEnd */
 function goFileEdge(toEnd) {
-  if (!currentArchive || selectedDirIndex < 0) return;
+  if (!state.currentArchive || state.selectedDirIndex < 0) return;
   const els = getVisibleFileElements();
   if (els.length === 0) return;
   const el = toEnd ? els[els.length - 1] : els[0];
@@ -2606,18 +2316,18 @@ function goFileEdge(toEnd) {
 
 function initFileListKeyboardNav() {
   tableShell.addEventListener("keydown", (e) => {
-    if (workspaceEl.classList.contains("is-hidden") || !currentArchive) return;
+    if (workspaceEl.classList.contains("is-hidden") || !state.currentArchive) return;
     if (e.altKey || e.metaKey || e.ctrlKey) return;
     const k = e.key;
     const tilesArrow =
-      fileViewMode === "tiles" &&
+      state.fileViewMode === "tiles" &&
       (k === "ArrowLeft" || k === "ArrowRight" || k === "ArrowUp" || k === "ArrowDown");
-    const listArrow = fileViewMode === "list" && (k === "ArrowUp" || k === "ArrowDown");
+    const listArrow = state.fileViewMode === "list" && (k === "ArrowUp" || k === "ArrowDown");
     if (!tilesArrow && !listArrow && k !== "Home" && k !== "End" && k !== "Enter") return;
     const visible = getVisibleFileElements();
     if (visible.length === 0) return;
     if (k === "Enter") {
-      if (selectedFileIndex >= 0) return;
+      if (state.selectedFileIndex >= 0) return;
       e.preventDefault();
       goFileEdge(false);
       return;
@@ -2629,7 +2339,7 @@ function initFileListKeyboardNav() {
       return;
     }
     e.preventDefault();
-    if (fileViewMode === "tiles") {
+    if (state.fileViewMode === "tiles") {
       if (k === "ArrowLeft") moveFileSelectionGrid("left");
       else if (k === "ArrowRight") moveFileSelectionGrid("right");
       else if (k === "ArrowUp") moveFileSelectionGrid("up");
@@ -2643,10 +2353,10 @@ function initFileListKeyboardNav() {
 
 function renderTree() {
   treeEl.replaceChildren();
-  if (!currentArchive) return;
+  if (!state.currentArchive) return;
 
   const rootUl = document.createElement("ul");
-  currentArchive.dirs.forEach((dir, di) => {
+  state.currentArchive.dirs.forEach((dir, di) => {
     const li = document.createElement("li");
     li.className = "tree-row";
 
@@ -2668,14 +2378,14 @@ function renderTree() {
     row.append(label, count);
 
     row.addEventListener("click", () => {
-      selectedDirIndex = di;
-      selectedFileIndex = -1;
+      state.selectedDirIndex = di;
+      state.selectedFileIndex = -1;
       highlightSelection(di, -1);
       fileFilter.value = "";
       renderFilesTable(di);
       showDirDetail(di);
       setPreviewIdle("Select a file to preview its contents.");
-      fileActions.hidden = true;
+      inspectorPaneActions.hidden = true;
       tableShell.focus({ preventScroll: true });
     });
 
@@ -2712,15 +2422,15 @@ function renderFilesTable(di, options = {}) {
   filesTiles.replaceChildren();
   if (!preserveFilter) {
     fileFilter.value = "";
-    activeFileTypeSet.clear();
+    state.activeFileTypeSet.clear();
   }
-  if (!currentArchive || di < 0 || di >= currentArchive.dirs.length) {
-    activeFileTypeSet.clear();
+  if (!state.currentArchive || di < 0 || di >= state.currentArchive.dirs.length) {
+    state.activeFileTypeSet.clear();
     rebuildFileTypeFilterUi(null);
     return;
   }
 
-  const dir = currentArchive.dirs[di];
+  const dir = state.currentArchive.dirs[di];
   const ordered = getSortedFileDisplayOrder(dir);
 
   ordered.forEach(({ entry, originalIndex: fi }) => {
@@ -2731,21 +2441,30 @@ function renderFilesTable(di, options = {}) {
       selectFileEntry(di, fi);
     };
 
-    if (fileViewMode === "list") {
+    if (state.fileViewMode === "list") {
       const tr = document.createElement("tr");
       tr.dataset.dirIndex = String(di);
       tr.dataset.fileIndex = String(fi);
       tr.dataset.fileName = entry.name;
 
-      const nameTd = document.createElement("td");
-      nameTd.textContent = entry.name;
+      const typeTd = document.createElement("td");
+      typeTd.className = "files-table__type";
+      const glyph = document.createElement("span");
+      glyph.className =
+        entry.compression === COMPRESSED_ZLIB
+          ? "files-type-glyph files-type-glyph--zlib"
+          : "files-type-glyph files-type-glyph--raw";
+      glyph.setAttribute("aria-hidden", "true");
+      typeTd.append(glyph, document.createTextNode(` ${label.toUpperCase()}`));
 
-      const compTd = document.createElement("td");
-      const pill = document.createElement("span");
-      pill.className = pillClass;
-      pill.textContent = label;
-      pill.title = title;
-      compTd.append(pill);
+      const nameTd = document.createElement("td");
+      nameTd.className = "files-table__filename";
+      nameTd.textContent = entry.name;
+      nameTd.title = entry.name;
+
+      const extTd = document.createElement("td");
+      extTd.className = "files-table__ext";
+      extTd.textContent = formatFileExtDisplay(entry.name);
 
       const szTd = document.createElement("td");
       szTd.className = "col-num";
@@ -2759,13 +2478,13 @@ function renderFilesTable(di, options = {}) {
 
       const offTd = document.createElement("td");
       offTd.className = "col-num mono-soft";
-      offTd.textContent = `0x${entry.offset.toString(16)}`;
+      offTd.textContent = `0x${entry.offset.toString(16).toUpperCase()}`;
 
       const dlTd = document.createElement("td");
       dlTd.className = "files-table__dl col-num";
       dlTd.append(makeInlineDownloadButton(di, fi, entry.name));
 
-      tr.append(nameTd, compTd, szTd, arcTd, offTd, dlTd);
+      tr.append(typeTd, nameTd, extTd, szTd, arcTd, offTd, dlTd);
       tr.addEventListener("click", onSelect);
       filesBody.append(tr);
     } else {
@@ -2775,17 +2494,31 @@ function renderFilesTable(di, options = {}) {
       tile.dataset.fileIndex = String(fi);
       tile.dataset.fileName = entry.name;
 
-      const nameEl = document.createElement("span");
+      const head = document.createElement("div");
+      head.className = "file-tile__head";
+      const idEl = document.createElement("span");
+      idEl.className = "file-tile__id";
+      idEl.textContent = `F_${String(fi).padStart(3, "0")}`;
+      const stamp = document.createElement("span");
+      stamp.className = "file-tile__stamp";
+      stamp.textContent = formatHexU32(entry.offset >>> 0);
+      head.append(idEl, stamp);
+
+      const nameEl = document.createElement("div");
       nameEl.className = "file-tile__name";
       nameEl.textContent = entry.name;
+      nameEl.title = entry.name;
 
-      const meta = document.createElement("span");
+      const meta = document.createElement("div");
       meta.className = "file-tile__meta";
       const pill = document.createElement("span");
       pill.className = pillClass;
       pill.textContent = label;
       pill.title = title;
-      meta.append(pill, document.createTextNode(` · ${formatBytes(entry.uncompressed_size)}`));
+      meta.append(
+        document.createTextNode(`SIZE: ${formatBytes(entry.uncompressed_size)} // `),
+        pill
+      );
 
       const stack = document.createElement("div");
       stack.className = "file-tile__stack";
@@ -2793,10 +2526,15 @@ function renderFilesTable(di, options = {}) {
 
       const dlBtn = makeInlineDownloadButton(di, fi, entry.name);
 
+      const body = document.createElement("div");
+      body.className = "file-tile__body";
+      body.append(stack, dlBtn);
+
       const usePsxThumb =
         isPsxFileName(entry.name) && entry.uncompressed_size <= TILE_PSX_THUMB_MAX_BYTES;
       const useBmpThumb =
         isBmpFileName(entry.name) && entry.uncompressed_size <= TILE_BMP_THUMB_MAX_BYTES;
+
       if (usePsxThumb || useBmpThumb) {
         tile.classList.add("file-tile--with-thumb");
         const thumbWrap = document.createElement("span");
@@ -2807,15 +2545,23 @@ function renderFilesTable(di, options = {}) {
         thumbImg.dataset.pending = "1";
         if (usePsxThumb) thumbImg.dataset.thumbKind = "psx";
         thumbWrap.append(thumbImg);
-        const body = document.createElement("div");
-        body.className = "file-tile__body";
-        body.append(stack, dlBtn);
-        tile.append(thumbWrap, body);
+        tile.append(head, thumbWrap, body);
         wireFileTileInteractions(tile, onSelect);
         filesTiles.append(tile);
         ensureTileThumbObserver().observe(tile);
       } else {
-        tile.append(stack, dlBtn);
+        const heroMod = fileTileHeroClass(entry.name);
+        const extDisp = formatFileExtDisplay(entry.name);
+        const extHero = extDisp === "—" ? ".BIN" : extDisp;
+        const hero = document.createElement("div");
+        hero.className = `file-tile__hero ${heroMod}`;
+        const extBig = document.createElement("span");
+        extBig.className = "file-tile__ext-label";
+        extBig.textContent = extHero;
+        const extBar = document.createElement("span");
+        extBar.className = "file-tile__ext-bar";
+        hero.append(extBig, extBar);
+        tile.append(head, hero, body);
         wireFileTileInteractions(tile, onSelect);
         filesTiles.append(tile);
       }
@@ -2830,10 +2576,15 @@ function renderFilesTable(di, options = {}) {
  * @param {number} di
  */
 function showDirDetail(di) {
-  if (!currentArchive || di < 0) return;
-  const dir = currentArchive.dirs[di];
+  if (!state.currentArchive || di < 0) return;
+  const dir = state.currentArchive.dirs[di];
   folderTitle.textContent = dir.name || "(unnamed folder)";
-  folderSubtitle.textContent = `${nf.format(dir.files.length)} files · click or ↑↓ to move`;
+  folderSubtitle.textContent = `RECORDS_FOUND: ${nf.format(dir.files.length)} // USE ↑↓ OR CLICK`;
+
+  inspectorFileTitle.textContent = dir.name || "(folder)";
+  inspectorFileKind.textContent = "Folder";
+  inspectorPaneActions.hidden = true;
+  setInspectorTab("details", false);
 
   detailEl.innerHTML = `
     <div class="detail-empty">
@@ -2848,19 +2599,22 @@ function showDirDetail(di) {
  * @param {number} fi
  */
 async function showFileDetail(di, fi) {
-  if (!currentArchive || !currentBuffer || di < 0 || fi < 0) return;
-  const dir = currentArchive.dirs[di];
+  if (!state.currentArchive || !state.currentBuffer || di < 0 || fi < 0) return;
+  const dir = state.currentArchive.dirs[di];
   const entry = dir.files[fi];
   folderTitle.textContent = dir.name || "(unnamed folder)";
   folderSubtitle.textContent = entry.name;
 
+  inspectorFileTitle.textContent = entry.name;
+  inspectorFileKind.textContent = inspectorKindLabel(entry);
+
   detailEl.innerHTML = `<p class="detail-loading">Reading file…</p>`;
   setPreviewIdle("Loading preview…");
-  fileActions.hidden = true;
+  inspectorPaneActions.hidden = true;
 
   try {
     const skip = skipCrc.checked;
-    const data = await extractEntry(currentBuffer, entry);
+    const data = await extractEntry(state.currentBuffer, entry);
     let levelBundle = null;
     if (isPsxFileName(entry.name)) {
       levelBundle = await resolveAutoPsxTextureSource(di, fi);
@@ -2925,23 +2679,46 @@ async function showFileDetail(di, fi) {
       : "";
 
     const trgNote = /\.trg$/i.test(entry.name)
-      ? `<dt>Triggers</dt><dd class="detail-prk-note"><code>.trg</code> — level trigger / script / metadata companion. This explorer does not parse TRG yet, but the related-files card below groups it with the sibling level mesh and texture library.</dd>`
+      ? `<dt>Triggers</dt><dd class="detail-prk-note"><code>.trg</code> — level trigger / script / metadata companion. This explorer does not parse TRG yet; the level bundle strip groups it with sibling mesh and texture entries.</dd>`
       : "";
 
-    detailEl.innerHTML = `
-      <div class="detail-card">
-        <dl class="meta-grid">
-          <dt>Path</dt><dd><strong>${escapeHtml(dir.name)}/${escapeHtml(entry.name)}</strong></dd>
+    const essentialsHtml = `
+      <div class="meta-essentials">
+        <div class="meta-essential-item">
+          <span class="meta-essential-k">Path</span>
+          <p class="meta-essential-v">${escapeHtml(dir.name)}/${escapeHtml(entry.name)}</p>
+        </div>
+        <div class="meta-essential-item">
+          <span class="meta-essential-k">Size</span>
+          <p class="meta-essential-v">${formatBytes(entry.uncompressed_size)} <span class="mono-soft">(${nf.format(entry.uncompressed_size)} B)</span></p>
+        </div>
+        <div class="meta-essential-item">
+          <span class="meta-essential-k">Offset</span>
+          <p class="meta-essential-v mono-soft">0x${entry.offset.toString(16)}</p>
+        </div>
+        <div class="meta-essential-item">
+          <span class="meta-essential-k">Checksum</span>
+          <p class="meta-essential-v">${crcHtml}</p>
+        </div>
+      </div>`;
+
+    const formatInner = `
           <dt>Compression</dt><dd title="${escapeHtml(title)}">${escapeHtml(label)}</dd>
-          <dt>Uncompressed</dt><dd>${formatBytes(entry.uncompressed_size)} <span class="mono-soft">(${nf.format(entry.uncompressed_size)} B)</span></dd>
-          <dt>Offset</dt><dd class="mono-soft">0x${entry.offset.toString(16)}</dd>
-          <dt>Checksum</dt><dd>${crcHtml}</dd>
           ${prkMeta}
           ${prkNote}
           ${psxNote}
           ${pshNote}
-          ${trgNote}
-        </dl>
+          ${trgNote}`;
+
+    detailEl.innerHTML = `
+      <div class="detail-card">
+        ${essentialsHtml}
+        <details class="detail-format-expando">
+          <summary class="detail-format-expando__summary">Format info</summary>
+          <div class="detail-format-expando__body">
+            <dl class="meta-grid">${formatInner}</dl>
+          </div>
+        </details>
       </div>`;
     if (levelBundle) {
       appendLevelBundleDetail(detailEl, di, levelBundle);
@@ -2954,7 +2731,7 @@ async function showFileDetail(di, fi) {
     } else if (isBmp(data)) {
       showBmpPreview(data);
     } else if (isPsxFileName(entry.name)) {
-      lastPsxPreviewBytes = data;
+      state.lastPsxPreviewBytes = data;
       try {
         globalThis.__pkrLastPsxBytes = data;
       } catch {
@@ -2992,7 +2769,8 @@ async function showFileDetail(di, fi) {
       }
     }
 
-    fileActions.hidden = false;
+    inspectorPaneActions.hidden = false;
+    setInspectorTab("preview", false);
     btnDownload.onclick = () => {
       void downloadFileEntry(di, fi);
     };
@@ -3000,20 +2778,9 @@ async function showFileDetail(di, fi) {
     const msg = e instanceof Error ? e.message : String(e);
     detailEl.innerHTML = `<div class="detail-card"><p class="crc-bad">${escapeHtml(msg)}</p></div>`;
     setPreviewIdle("Preview unavailable.");
-    fileActions.hidden = true;
+    inspectorPaneActions.hidden = true;
     setStatus(msg);
   }
-}
-
-/**
- * @param {string} s
- */
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 /**
@@ -3062,15 +2829,6 @@ function openHistoryDb() {
 /** @param {string} name @param {number} byteLength */
 function makeHistoryId(name, byteLength) {
   return `${byteLength}::${encodeURIComponent(name)}`;
-}
-
-/** @param {number} ts */
-function formatRecentTime(ts) {
-  const d = Date.now() - ts;
-  if (d < 45_000) return "just now";
-  if (d < 3600_000) return `${Math.max(1, Math.floor(d / 60_000))} min ago`;
-  if (d < 86_400_000) return `${Math.max(1, Math.floor(d / 3600_000))} h ago`;
-  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 /**
@@ -3389,38 +3147,38 @@ function bindDropZone(el) {
  * @param {{ skipHistorySave?: boolean, fileHandle?: FileSystemFileHandle | null }} [options]
  */
 async function applyLoadedBuffer(buffer, fileName, options = {}) {
-  currentFileName = fileName;
-  currentBuffer = buffer;
-  currentLoadKind = "archive";
+  state.currentFileName = fileName;
+  state.currentBuffer = buffer;
+  state.currentLoadKind = "archive";
   clearAutoPsxTextureSource();
-  autoPsxTextureCache.clear();
+  state.autoPsxTextureCache.clear();
   updatePsxExternalSourceLabel();
   /** @type {ReturnType<typeof parsePrk> | null} */
   let standalonePrk = null;
   try {
-    currentArchive = parsePkr(currentBuffer);
+    state.currentArchive = parsePkr(state.currentBuffer);
   } catch (e) {
     if (isPrkFileName(fileName)) {
-      currentLoadKind = "prk";
-      currentArchive = createStandalonePrkArchive(fileName, currentBuffer.byteLength);
+      state.currentLoadKind = "prk";
+      state.currentArchive = createStandalonePrkArchive(fileName, state.currentBuffer.byteLength);
       try {
-        standalonePrk = parsePrk(currentBuffer);
+        standalonePrk = parsePrk(state.currentBuffer);
       } catch {
         standalonePrk = null;
       }
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      currentArchive = null;
-      currentBuffer = null;
+      state.currentArchive = null;
+      state.currentBuffer = null;
       treeEl.replaceChildren();
       revokeAllTileThumbUrls();
       filesBody.replaceChildren();
       filesTiles.replaceChildren();
-      activeFileTypeSet.clear();
+      state.activeFileTypeSet.clear();
       rebuildFileTypeFilterUi(null);
       detailEl.innerHTML = "";
       setPreviewIdle("");
-      fileActions.hidden = true;
+      inspectorPaneActions.hidden = true;
       summaryFilename.textContent = "";
       summaryFormat.textContent = "";
       summaryStats.textContent = "";
@@ -3430,32 +3188,32 @@ async function applyLoadedBuffer(buffer, fileName, options = {}) {
     }
   }
 
-  const totalFiles = currentArchive.dirs.reduce((n, d) => n + d.files.length, 0);
+  const totalFiles = state.currentArchive.dirs.reduce((n, d) => n + d.files.length, 0);
   summaryFilename.textContent = fileName;
   summaryFilename.title = fileName;
-  summaryFormat.textContent = currentLoadKind === "prk" ? "PRK" : formatLabel(currentArchive);
+  summaryFormat.textContent = state.currentLoadKind === "prk" ? "PRK" : formatLabel(state.currentArchive);
   summaryStats.textContent =
-    currentLoadKind === "prk"
+    state.currentLoadKind === "prk"
       ? standalonePrk
-        ? `${nf.format(standalonePrk.width)} × ${nf.format(standalonePrk.height)} cells · ${standalonePrk.header.theme} · ${formatBytes(currentBuffer.byteLength)}`
-        : formatBytes(currentBuffer.byteLength)
-      : `${nf.format(currentArchive.dirs.length)} folders · ${nf.format(totalFiles)} files · ${formatBytes(currentBuffer.byteLength)}`;
+        ? `${nf.format(standalonePrk.width)} × ${nf.format(standalonePrk.height)} cells · ${standalonePrk.header.theme} · ${formatBytes(state.currentBuffer.byteLength)}`
+        : formatBytes(state.currentBuffer.byteLength)
+      : `${nf.format(state.currentArchive.dirs.length)} folders · ${nf.format(totalFiles)} files · ${formatBytes(state.currentBuffer.byteLength)}`;
 
-  navFolderCount.textContent = `${nf.format(currentArchive.dirs.length)}`;
+  navFolderCount.textContent = `${nf.format(state.currentArchive.dirs.length)}`;
 
   setViewMode("workspace");
   syncFileViewPanels();
-  selectedDirIndex = 0;
-  selectedFileIndex = currentLoadKind === "prk" ? 0 : -1;
+  state.selectedDirIndex = 0;
+  state.selectedFileIndex = state.currentLoadKind === "prk" ? 0 : -1;
   renderTree();
   renderFilesTable(0);
-  highlightSelection(0, selectedFileIndex);
-  if (currentLoadKind === "prk") {
+  highlightSelection(0, state.selectedFileIndex);
+  if (state.currentLoadKind === "prk") {
     void showFileDetail(0, 0);
   } else {
     showDirDetail(0);
     setPreviewIdle("Select a file to preview its contents.");
-    fileActions.hidden = true;
+    inspectorPaneActions.hidden = true;
   }
 
   const fh = options.fileHandle;
@@ -3463,7 +3221,7 @@ async function applyLoadedBuffer(buffer, fileName, options = {}) {
     void historyRecordOpen(fileName, buffer.byteLength, fh).catch(() => {});
   }
 
-  if (currentLoadKind === "archive") {
+  if (state.currentLoadKind === "archive") {
     setStatus(`Loaded ${fileName}. Preparing decompression…`);
     try {
       await loadFflate();
@@ -3502,6 +3260,14 @@ function fileSystemAccessForOpen() {
   return typeof window.showOpenFilePicker === "function";
 }
 
+function openArchiveFromWelcome() {
+  if (fileSystemAccessForOpen()) {
+    void pickAndLoadArchive();
+  } else {
+    fileInput.click();
+  }
+}
+
 async function pickAndLoadArchive() {
   try {
     const handles = await window.showOpenFilePicker({
@@ -3528,7 +3294,7 @@ async function pickAndLoadArchive() {
 }
 
 /* Help */
-btnHelp.addEventListener("click", openHelp);
+navDocs?.addEventListener("click", openHelp);
 welcomeHelp.addEventListener("click", openHelp);
 helpClose.addEventListener("click", () => helpDialog.close());
 helpDialog.addEventListener("click", (e) => {
@@ -3546,10 +3312,14 @@ previewPopoutDialog.addEventListener("close", () => {
   dockPreviewBlock();
 });
 
-openArchiveLabel?.addEventListener("click", (e) => {
-  if (!fileSystemAccessForOpen()) return;
+welcomeDrop.addEventListener("click", () => {
+  openArchiveFromWelcome();
+});
+
+welcomeDrop.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
   e.preventDefault();
-  void pickAndLoadArchive();
+  openArchiveFromWelcome();
 });
 
 fileInput.addEventListener("change", () => {
@@ -3603,18 +3373,18 @@ function initFileTypeFilter() {
 
     if (token === "all") {
       if (el.checked) {
-        activeFileTypeSet.clear();
+        state.activeFileTypeSet.clear();
       } else {
         el.checked = true;
       }
     } else {
       if (el.checked) {
-        activeFileTypeSet.add(token);
+        state.activeFileTypeSet.add(token);
       } else {
-        activeFileTypeSet.delete(token);
+        state.activeFileTypeSet.delete(token);
       }
-      if (activeFileTypeSet.size === 0) {
-        activeFileTypeSet.clear();
+      if (state.activeFileTypeSet.size === 0) {
+        state.activeFileTypeSet.clear();
       }
     }
     syncFileTypeFilterPanelCheckboxes();
@@ -3642,8 +3412,8 @@ function initFileTypeFilter() {
 initFileTypeFilter();
 
 skipCrc.addEventListener("change", () => {
-  if (currentArchive && currentBuffer && selectedDirIndex >= 0 && selectedFileIndex >= 0) {
-    void showFileDetail(selectedDirIndex, selectedFileIndex);
+  if (state.currentArchive && state.currentBuffer && state.selectedDirIndex >= 0 && state.selectedFileIndex >= 0) {
+    void showFileDetail(state.selectedDirIndex, state.selectedFileIndex);
   }
 });
 
@@ -3652,7 +3422,7 @@ previewVolumeRange.addEventListener("input", () => {
 });
 
 previewCopyBtn.addEventListener("click", async () => {
-  const t = previewClipboardText;
+  const t = state.previewClipboardText;
   if (!t) return;
   try {
     await navigator.clipboard.writeText(t);
@@ -3786,7 +3556,7 @@ try {
 try {
   const f = localStorage.getItem(STORAGE_BMP_FIT);
   if (f === "0") {
-    bmpFitToFrame = false;
+    state.bmpFitToFrame = false;
     previewBmpFit.checked = false;
   }
 } catch {
@@ -3794,9 +3564,9 @@ try {
 }
 
 previewBmpFit.addEventListener("change", () => {
-  bmpFitToFrame = previewBmpFit.checked;
+  state.bmpFitToFrame = previewBmpFit.checked;
   try {
-    localStorage.setItem(STORAGE_BMP_FIT, bmpFitToFrame ? "1" : "0");
+    localStorage.setItem(STORAGE_BMP_FIT, state.bmpFitToFrame ? "1" : "0");
   } catch {
     /* ignore */
   }
@@ -3804,8 +3574,8 @@ previewBmpFit.addEventListener("change", () => {
 });
 
 previewPrkColorMode.addEventListener("change", () => {
-  if (!prkPreviewState) return;
-  prkPreviewState.colorMode = previewPrkColorMode.value || "slot3";
+  if (!state.prkPreviewState) return;
+  state.prkPreviewState.colorMode = previewPrkColorMode.value || "slot3";
   renderPrkGrid();
   renderPrkSelection();
 });
@@ -3829,7 +3599,7 @@ previewAutoplay.addEventListener("change", () => {
 
 previewPsxDebugMode.addEventListener("change", () => {
   const v = previewPsxDebugMode.value;
-  if (psxPreviewCtx) psxPreviewCtx.applyDebugMode(v);
+  if (state.psxPreviewCtx) state.psxPreviewCtx.applyDebugMode(v);
   try {
     localStorage.setItem(STORAGE_PSX_DEBUG_MODE, v);
   } catch {
@@ -3838,7 +3608,7 @@ previewPsxDebugMode.addEventListener("change", () => {
 });
 
 previewPsxTextured.addEventListener("change", () => {
-  if (psxPreviewCtx) psxPreviewCtx.applyDebugMode(previewPsxDebugMode.value);
+  if (state.psxPreviewCtx) state.psxPreviewCtx.applyDebugMode(previewPsxDebugMode.value);
   try {
     localStorage.setItem(
       STORAGE_PSX_SURFACE_MODE,
@@ -3863,11 +3633,11 @@ previewPsxAssemble.addEventListener("change", () => {
 });
 
 previewPsxPadReport.addEventListener("click", () => {
-  if (!lastPsxPreviewBytes || lastPsxPreviewBytes.length === 0) {
+  if (!state.lastPsxPreviewBytes || state.lastPsxPreviewBytes.length === 0) {
     setStatus("No PSX bytes in memory — select a .psx archive entry first.");
     return;
   }
-  const report = dumpPsxCharacterPadDiagnostics(lastPsxPreviewBytes);
+  const report = dumpPsxCharacterPadDiagnostics(state.lastPsxPreviewBytes);
   console.log(report);
   setStatus("Pad report printed to the browser console (F12 → Console).");
 });
@@ -3888,15 +3658,15 @@ previewPsxSourceInput.addEventListener("change", async () => {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const parsed = parsePsxExternalTextureSource(bytes);
     if (!parsed) throw new Error("not a supported PSX texture library");
-    externalPsxTextureSource = parsed;
-    externalPsxTextureSourceName = file.name;
+    state.externalPsxTextureSource = parsed;
+    state.externalPsxTextureSourceName = file.name;
     updatePsxExternalSourceLabel();
     setStatus(`Loaded external texture source ${file.name}.`);
     refreshCurrentSelection();
     refreshPsxTileThumbsGrid();
   } catch (err) {
-    externalPsxTextureSource = null;
-    externalPsxTextureSourceName = "";
+    state.externalPsxTextureSource = null;
+    state.externalPsxTextureSourceName = "";
     updatePsxExternalSourceLabel();
     const msg = err instanceof Error ? err.message : String(err);
     setStatus(`External texture source failed: ${msg}`);
@@ -3915,11 +3685,20 @@ globalThis.dumpPsxCharacterPadDiagnostics = dumpPsxCharacterPadDiagnostics;
 
 try {
   const v = localStorage.getItem(STORAGE_FILE_VIEW);
-  if (v === "tiles") fileViewMode = "tiles";
+  if (v === "tiles") state.fileViewMode = "tiles";
 } catch {
   /* ignore */
 }
 syncFileViewPanels();
+
+tabInspectorPreview.addEventListener("click", () => setInspectorTab("preview"));
+tabInspectorDetails.addEventListener("click", () => setInspectorTab("details"));
+try {
+  const t = localStorage.getItem(STORAGE_INSPECTOR_TAB);
+  if (t === "details") setInspectorTab("details", false);
+} catch {
+  /* ignore */
+}
 
 initFileListKeyboardNav();
 
@@ -3940,14 +3719,14 @@ function initFilesTableSort() {
       return;
     }
     const key = /** @type {FileSortKey} */ (raw);
-    if (fileListSort.key === key) {
-      fileListSort = { key, dir: fileListSort.dir === "asc" ? "desc" : "asc" };
+    if (state.fileListSort.key === key) {
+      state.fileListSort = { key, dir: state.fileListSort.dir === "asc" ? "desc" : "asc" };
     } else {
-      fileListSort = { key, dir: "asc" };
+      state.fileListSort = { key, dir: "asc" };
     }
-    if (selectedDirIndex >= 0) {
-      renderFilesTable(selectedDirIndex, { preserveFilter: true });
-      highlightSelection(selectedDirIndex, selectedFileIndex);
+    if (state.selectedDirIndex >= 0) {
+      renderFilesTable(state.selectedDirIndex, { preserveFilter: true });
+      highlightSelection(state.selectedDirIndex, state.selectedFileIndex);
     }
   });
   syncFileSortHeaderUi();
@@ -3961,7 +3740,7 @@ void (async () => {
   } catch {
     /* IDB or restore failed — stay on welcome */
   }
-  if (!currentArchive) {
+  if (!state.currentArchive) {
     setViewMode("welcome");
     setPreviewIdle("");
   }
