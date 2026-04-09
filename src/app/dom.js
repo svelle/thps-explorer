@@ -39,10 +39,6 @@ export function $(id) {
  * @property {HTMLHeadingElement} inspectorFileTitle
  * @property {HTMLSpanElement} inspectorFileKind
  * @property {HTMLDivElement} inspectorPaneActions
- * @property {HTMLButtonElement} tabInspectorPreview
- * @property {HTMLButtonElement} tabInspectorDetails
- * @property {HTMLDivElement} panelInspectorPreview
- * @property {HTMLDivElement} panelInspectorDetails
  * @property {HTMLDivElement} previewPsxStatsHud
  * @property {HTMLDivElement} previewPsxToolbarEl
  * @property {HTMLElement} previewBlock
@@ -51,6 +47,11 @@ export function $(id) {
  * @property {HTMLElement} previewHint
  * @property {HTMLElement} previewAudioWrap
  * @property {HTMLAudioElement} previewAudio
+ * @property {HTMLButtonElement} previewAudioPlay
+ * @property {HTMLInputElement} previewAudioSeek
+ * @property {HTMLElement} previewAudioTimeCurrent
+ * @property {HTMLElement} previewAudioTimeDuration
+ * @property {HTMLElement} previewAudioPlayIcon
  * @property {HTMLInputElement} previewVolumeRange
  * @property {HTMLInputElement} previewAutoplay
  * @property {HTMLElement} previewPrkWrap
@@ -68,6 +69,10 @@ export function $(id) {
  * @property {HTMLButtonElement} previewCopyBtn
  * @property {HTMLElement} previewPsxWrap
  * @property {HTMLCanvasElement} previewPsxCanvas
+ * @property {HTMLCanvasElement} previewPsxUvCanvas
+ * @property {HTMLDivElement} previewPsxCanvasStack
+ * @property {HTMLButtonElement} previewPsxViewMode3d
+ * @property {HTMLButtonElement} previewPsxViewModeUv
  * @property {HTMLSelectElement} previewPsxDebugMode
  * @property {HTMLInputElement} previewPsxTextured
  * @property {HTMLInputElement} previewPsxAssemble
@@ -76,14 +81,15 @@ export function $(id) {
  * @property {HTMLButtonElement} previewPsxExportTextureBtn
  * @property {HTMLInputElement} previewPsxSourceInput
  * @property {HTMLElement} previewPsxSourceName
+ * @property {HTMLElement} previewPsxPartsAside
+ * @property {HTMLButtonElement} previewPsxPartsToggle
+ * @property {HTMLDivElement} previewPsxPartList
  * @property {HTMLElement} statusEl
  * @property {HTMLButtonElement} btnDownload
  * @property {HTMLDialogElement} helpDialog
  * @property {HTMLDialogElement} previewPopoutDialog
  * @property {HTMLElement} previewPopoutSlot
  * @property {HTMLButtonElement} previewPopoutClose
- * @property {HTMLElement | null} navDocs
- * @property {HTMLElement} welcomeHelp
  * @property {HTMLButtonElement} helpClose
  * @property {HTMLElement} recentWrap
  * @property {HTMLUListElement} recentList
@@ -127,10 +133,6 @@ export function initDomRefs() {
     inspectorFileTitle: /** @type {HTMLHeadingElement} */ ($("inspector-file-title")),
     inspectorFileKind: /** @type {HTMLSpanElement} */ ($("inspector-file-kind")),
     inspectorPaneActions: /** @type {HTMLDivElement} */ ($("inspector-pane-actions")),
-    tabInspectorPreview: /** @type {HTMLButtonElement} */ ($("tab-inspector-preview")),
-    tabInspectorDetails: /** @type {HTMLButtonElement} */ ($("tab-inspector-details")),
-    panelInspectorPreview: /** @type {HTMLDivElement} */ ($("panel-inspector-preview")),
-    panelInspectorDetails: /** @type {HTMLDivElement} */ ($("panel-inspector-details")),
     previewPsxStatsHud: /** @type {HTMLDivElement} */ ($("preview-psx-stats-hud")),
     previewPsxToolbarEl: /** @type {HTMLDivElement} */ ($("preview-psx-toolbar")),
     previewBlock: $("preview-block"),
@@ -139,6 +141,11 @@ export function initDomRefs() {
     previewHint: $("preview-hint"),
     previewAudioWrap: $("preview-audio-wrap"),
     previewAudio: /** @type {HTMLAudioElement} */ ($("preview-audio")),
+    previewAudioPlay: /** @type {HTMLButtonElement} */ ($("preview-audio-play")),
+    previewAudioSeek: /** @type {HTMLInputElement} */ ($("preview-audio-seek")),
+    previewAudioTimeCurrent: $("preview-audio-time-current"),
+    previewAudioTimeDuration: $("preview-audio-time-duration"),
+    previewAudioPlayIcon: $("preview-audio-play-icon"),
     previewVolumeRange: /** @type {HTMLInputElement} */ ($("preview-volume-range")),
     previewAutoplay: /** @type {HTMLInputElement} */ ($("preview-autoplay")),
     previewPrkWrap: $("preview-prk-wrap"),
@@ -156,6 +163,10 @@ export function initDomRefs() {
     previewCopyBtn: /** @type {HTMLButtonElement} */ ($("preview-copy")),
     previewPsxWrap: $("preview-psx-wrap"),
     previewPsxCanvas: /** @type {HTMLCanvasElement} */ ($("preview-psx-canvas")),
+    previewPsxUvCanvas: /** @type {HTMLCanvasElement} */ ($("preview-psx-uv-canvas")),
+    previewPsxCanvasStack: /** @type {HTMLDivElement} */ ($("preview-psx-canvas-stack")),
+    previewPsxViewMode3d: /** @type {HTMLButtonElement} */ ($("preview-psx-view-mode-3d")),
+    previewPsxViewModeUv: /** @type {HTMLButtonElement} */ ($("preview-psx-view-mode-uv")),
     previewPsxDebugMode: /** @type {HTMLSelectElement} */ ($("preview-psx-debug-mode")),
     previewPsxTextured: /** @type {HTMLInputElement} */ ($("preview-psx-textured")),
     previewPsxAssemble: /** @type {HTMLInputElement} */ ($("preview-psx-assemble")),
@@ -164,14 +175,15 @@ export function initDomRefs() {
     previewPsxExportTextureBtn: /** @type {HTMLButtonElement} */ ($("preview-psx-export-texture")),
     previewPsxSourceInput: /** @type {HTMLInputElement} */ ($("preview-psx-source-input")),
     previewPsxSourceName: $("preview-psx-source-name"),
+    previewPsxPartsAside: $("preview-psx-parts-aside"),
+    previewPsxPartsToggle: /** @type {HTMLButtonElement} */ ($("preview-psx-parts-toggle")),
+    previewPsxPartList: /** @type {HTMLDivElement} */ ($("preview-psx-part-list")),
     statusEl: $("status"),
     btnDownload: /** @type {HTMLButtonElement} */ ($("btn-download")),
     helpDialog: /** @type {HTMLDialogElement} */ ($("help-dialog")),
     previewPopoutDialog: /** @type {HTMLDialogElement} */ ($("preview-popout-dialog")),
     previewPopoutSlot: $("preview-popout-slot"),
     previewPopoutClose: /** @type {HTMLButtonElement} */ ($("preview-popout-close")),
-    navDocs: document.getElementById("nav-docs"),
-    welcomeHelp: $("welcome-help"),
     helpClose: /** @type {HTMLButtonElement} */ ($("help-close")),
     recentWrap: $("recent-wrap"),
     recentList: /** @type {HTMLUListElement} */ ($("recent-list")),

@@ -5,7 +5,8 @@ export const STORAGE_BMP_FIT = "pkr-explorer-bmp-fit-frame";
 export const STORAGE_AUTO_RESTORE = "pkr-explorer-auto-restore";
 export const STORAGE_PSX_DEBUG_MODE = "pkr-explorer-psx-debug-mode";
 export const STORAGE_PSX_SURFACE_MODE = "pkr-explorer-psx-surface-mode";
-export const STORAGE_INSPECTOR_TAB = "pkr-explorer-inspector-tab";
+/** `"3d"` | `"uv"` — PSX preview: 3D mesh vs texture sheet + UV overlay. */
+export const STORAGE_PSX_VIEW_MODE = "pkr-explorer-psx-view-mode";
 
 /** `"dark"` | `"light"` — Warehouse 99 dark vs light edition. */
 export const STORAGE_THEME = "pkr-explorer-theme";
@@ -16,8 +17,10 @@ export const HISTORY_DB_VER = 2;
 export const HISTORY_META = "meta";
 export const HISTORY_MAX_ENTRIES = 10;
 
-export const INSPECTOR_WIDTH_MIN = 220;
-export const INSPECTOR_WIDTH_MAX = 720;
+export const INSPECTOR_WIDTH_MIN = 820;
+export const INSPECTOR_WIDTH_MAX = 1920;
+/** Viewport width (px) at which the 3-column + resizable inspector layout is used. */
+export const INSPECTOR_LAYOUT_MIN_VIEWPORT = 1120;
 
 export const DEFAULT_PREVIEW_HINT = "Hex or plain text (first portion of the file).";
 

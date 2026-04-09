@@ -78,6 +78,8 @@ export const state = {
    * @property {{ dispose: () => void }} controls
    * @property {object} overlayRef
    * @property {import("three").Scene} scene
+   * @property {import("three").Mesh} mesh
+   * @property {import("three").Mesh} psxGround
    * @property {import("three").BufferGeometry[]} geoms
    * @property {unknown} texMaterials
    * @property {object} mats

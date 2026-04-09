@@ -42,7 +42,6 @@
       <div class="app-header__trailing">
         <nav class="top-nav" aria-label="Primary">
           <span class="top-nav__link top-nav__link--active" aria-current="page">EXPLORER</span>
-          <button type="button" class="top-nav__link" id="nav-docs">DOCUMENTATION</button>
         </nav>
         <button
           type="button"
@@ -101,13 +100,6 @@
           <button type="button" class="link-button" id="recent-clear">Clear recent</button>
         </div>
       </div>
-      <p class="welcome__footnote">
-        STACK: serve over HTTP (not <code class="welcome__foot-code">file://</code>).
-        <button type="button" class="link-button link-button--with-icon" id="welcome-help">
-          <span class="material-icons link-button__icon" aria-hidden="true">arrow_forward</span>
-          RUNBOOK
-        </button>
-      </p>
     </div>
   </section>
 
@@ -366,42 +358,113 @@
           </button>
         </div>
       </header>
-      <div class="inspector-tabs" role="tablist" aria-label="Preview and metadata">
-        <button
-          type="button"
-          class="inspector-tab"
-          id="tab-inspector-preview"
-          role="tab"
-          aria-selected="true"
-          aria-controls="panel-inspector-preview"
-        >
-          Preview
-        </button>
-        <button
-          type="button"
-          class="inspector-tab"
-          id="tab-inspector-details"
-          role="tab"
-          aria-selected="false"
-          aria-controls="panel-inspector-details"
-        >
-          Details
-        </button>
-      </div>
-      <div class="inspector-tab-panels">
+      <div class="inspector-pane-stack">
         <div
           id="panel-inspector-preview"
-          class="inspector-tab-panel inspector-tab-panel--preview"
-          role="tabpanel"
-          aria-labelledby="tab-inspector-preview"
+          class="inspector-pane inspector-pane--preview"
+          aria-label="Preview"
         >
           <div class="preview-viewport-shell">
             <div id="preview-home-anchor" hidden></div>
             <div id="preview-block" class="preview-block">
               <div class="preview-overlay-top">
+                <div id="preview-image-toolbar" class="preview-image-toolbar is-hidden">
+                  <label class="preview-bmp-fit-label" title="Scale the bitmap to use the full preview area (1:1 pixels when off)">
+                    <input type="checkbox" id="preview-bmp-fit" checked />
+                    <span>Fit to frame</span>
+                  </label>
+                </div>
+              </div>
+              <div id="preview-audio-wrap" class="preview-audio-wrap is-hidden">
+                <audio id="preview-audio" preload="metadata" playsinline></audio>
+                <div class="audio-player" role="region" aria-label="WAV preview">
+                  <div class="audio-player__transport">
+                    <button
+                      type="button"
+                      id="preview-audio-play"
+                      class="audio-player__play"
+                      aria-label="Play"
+                    >
+                      <span class="material-icons audio-player__play-icon" id="preview-audio-play-icon" aria-hidden="true">play_arrow</span>
+                    </button>
+                    <div class="audio-player__progress-col">
+                      <input
+                        type="range"
+                        id="preview-audio-seek"
+                        class="audio-player__seek"
+                        min="0"
+                        max="1"
+                        step="any"
+                        value="0"
+                        aria-label="Seek"
+                        aria-valuemin="0"
+                        aria-valuemax="1"
+                        aria-valuenow="0"
+                      />
+                      <div class="audio-player__times">
+                        <span id="preview-audio-time-current" class="audio-player__t">0:00</span>
+                        <span class="audio-player__sep" aria-hidden="true">/</span>
+                        <span id="preview-audio-time-duration" class="audio-player__t audio-player__t--muted">0:00</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="preview-volume">
+                    <label for="preview-volume-range" class="preview-volume__label">Volume</label>
+                    <input
+                      type="range"
+                      id="preview-volume-range"
+                      class="preview-volume__range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value="0.2"
+                      aria-label="Playback volume"
+                    />
+                  </div>
+                  <label class="preview-autoplay">
+                    <input type="checkbox" id="preview-autoplay" checked />
+                    <span>Autoplay when opening a WAV</span>
+                  </label>
+                </div>
+              </div>
+              <div id="preview-prk-wrap" class="preview-prk-wrap is-hidden" aria-label="PRK park preview">
+                <div class="preview-prk-toolbar" role="toolbar" aria-label="PRK color mode">
+                  <label class="preview-prk-label" for="preview-prk-color-mode">
+                    <span class="preview-prk-label__text">Color by</span>
+                    <select id="preview-prk-color-mode" class="preview-prk-select">
+                      <option value="slot3">Slot 3</option>
+                      <option value="slot0">Slot 0</option>
+                      <option value="slot1">Slot 1</option>
+                      <option value="slot2">Slot 2</option>
+                      <option value="variant">Variant</option>
+                      <option value="flags">Flags</option>
+                      <option value="indexByte">Index</option>
+                    </select>
+                  </label>
+                  <span id="preview-prk-summary" class="preview-prk-summary"></span>
+                </div>
+                <div class="preview-prk-body">
+                  <div class="preview-prk-grid-shell">
+                    <div id="preview-prk-grid" class="preview-prk-grid" role="grid" aria-label="PRK piece grid"></div>
+                  </div>
+                  <div class="preview-prk-side">
+                    <div class="preview-prk-card">
+                      <div class="preview-prk-card__title">Cell</div>
+                      <pre id="preview-prk-selection" class="preview-prk-selection">Select a cell.</pre>
+                    </div>
+                    <div class="preview-prk-card">
+                      <div class="preview-prk-card__title">Named gaps</div>
+                      <div id="preview-prk-gaps" class="preview-prk-gaps"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="preview-image-wrap" class="preview-image-wrap preview-image-wrap--fit is-hidden">
+                <img id="preview-image" alt="" />
+              </div>
+              <div id="preview-psx-wrap" class="preview-psx-wrap is-hidden" aria-label="3D mesh preview">
                 <div id="preview-psx-toolbar" class="preview-psx-toolbar is-hidden" role="toolbar" aria-label="3D preview options">
                   <label class="preview-psx-debug-label" for="preview-psx-debug-mode">
-                    <span class="preview-psx-debug-label__text">Debug</span>
                     <select id="preview-psx-debug-mode" class="preview-psx-debug-select" aria-label="PSX mesh debug rendering mode">
                       <option value="shaded">Shaded (lit)</option>
                       <option value="uv-winding">UV winding</option>
@@ -480,70 +543,56 @@
                   <input type="file" id="preview-psx-source-input" accept=".psx,.PSX,*/*" hidden />
                   <span id="preview-psx-source-name" class="preview-psx-source-name">No external texture source</span>
                 </div>
-                <div id="preview-image-toolbar" class="preview-image-toolbar is-hidden">
-                  <label class="preview-bmp-fit-label" title="Scale the bitmap to use the full preview area (1:1 pixels when off)">
-                    <input type="checkbox" id="preview-bmp-fit" checked />
-                    <span>Fit to frame</span>
-                  </label>
-                </div>
-              </div>
-              <div id="preview-audio-wrap" class="preview-audio-wrap is-hidden">
-                <audio id="preview-audio" controls preload="metadata" playsinline></audio>
-                <div class="preview-volume">
-                  <label for="preview-volume-range" class="preview-volume__label">Volume</label>
-                  <input
-                    type="range"
-                    id="preview-volume-range"
-                    class="preview-volume__range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value="0.2"
-                    aria-label="Playback volume"
-                  />
-                </div>
-                <label class="preview-autoplay">
-                  <input type="checkbox" id="preview-autoplay" />
-                  <span>Autoplay when opening a WAV</span>
-                </label>
-              </div>
-              <div id="preview-prk-wrap" class="preview-prk-wrap is-hidden" aria-label="PRK park preview">
-                <div class="preview-prk-toolbar" role="toolbar" aria-label="PRK color mode">
-                  <label class="preview-prk-label" for="preview-prk-color-mode">
-                    <span class="preview-prk-label__text">Color by</span>
-                    <select id="preview-prk-color-mode" class="preview-prk-select">
-                      <option value="slot3">Slot 3</option>
-                      <option value="slot0">Slot 0</option>
-                      <option value="slot1">Slot 1</option>
-                      <option value="slot2">Slot 2</option>
-                      <option value="variant">Variant</option>
-                      <option value="flags">Flags</option>
-                      <option value="indexByte">Index</option>
-                    </select>
-                  </label>
-                  <span id="preview-prk-summary" class="preview-prk-summary"></span>
-                </div>
-                <div class="preview-prk-body">
-                  <div class="preview-prk-grid-shell">
-                    <div id="preview-prk-grid" class="preview-prk-grid" role="grid" aria-label="PRK piece grid"></div>
+                <div class="preview-psx-main">
+                  <div id="preview-psx-canvas-stack" class="preview-psx-canvas-stack">
+                    <canvas id="preview-psx-canvas" class="preview-psx-canvas" width="640" height="400"></canvas>
+                    <canvas
+                      id="preview-psx-uv-canvas"
+                      class="preview-psx-canvas preview-psx-uv-canvas is-hidden"
+                      width="640"
+                      height="400"
+                      aria-hidden="true"
+                    ></canvas>
                   </div>
-                  <div class="preview-prk-side">
-                    <div class="preview-prk-card">
-                      <div class="preview-prk-card__title">Cell</div>
-                      <pre id="preview-prk-selection" class="preview-prk-selection">Select a cell.</pre>
-                    </div>
-                    <div class="preview-prk-card">
-                      <div class="preview-prk-card__title">Named gaps</div>
-                      <div id="preview-prk-gaps" class="preview-prk-gaps"></div>
-                    </div>
+                  <aside
+                    id="preview-psx-parts-aside"
+                    class="preview-psx-parts-aside is-hidden"
+                    aria-label="Mesh part visibility"
+                  >
+                    <button
+                      type="button"
+                      id="preview-psx-parts-toggle"
+                      class="preview-psx-parts-toggle"
+                      aria-expanded="true"
+                      aria-controls="preview-psx-part-list"
+                    >
+                      Parts
+                    </button>
+                    <div id="preview-psx-part-list" class="preview-psx-part-list" role="group" aria-label="Toggle mesh parts"></div>
+                  </aside>
+                </div>
+                <div class="preview-psx-view-mode-row" role="radiogroup" aria-label="Preview view mode">
+                  <div class="view-toggle preview-psx-view-mode-toggle" role="presentation">
+                    <button
+                      type="button"
+                      id="preview-psx-view-mode-3d"
+                      class="view-toggle__btn is-active"
+                      role="radio"
+                      aria-checked="true"
+                    >
+                      3D mesh
+                    </button>
+                    <button
+                      type="button"
+                      id="preview-psx-view-mode-uv"
+                      class="view-toggle__btn"
+                      role="radio"
+                      aria-checked="false"
+                    >
+                      UV / texture
+                    </button>
                   </div>
                 </div>
-              </div>
-              <div id="preview-image-wrap" class="preview-image-wrap preview-image-wrap--fit is-hidden">
-                <img id="preview-image" alt="" />
-              </div>
-              <div id="preview-psx-wrap" class="preview-psx-wrap is-hidden" aria-label="3D mesh preview">
-                <canvas id="preview-psx-canvas" class="preview-psx-canvas" width="640" height="400"></canvas>
                 <div id="preview-psx-stats-hud" class="preview-psx-stats-hud" aria-live="polite"></div>
                 <p class="preview-psx-hint">Drag to orbit · scroll to zoom</p>
               </div>
@@ -554,10 +603,8 @@
         </div>
         <div
           id="panel-inspector-details"
-          class="inspector-tab-panel inspector-tab-panel--details"
-          role="tabpanel"
-          aria-labelledby="tab-inspector-details"
-          hidden
+          class="inspector-pane inspector-pane--details"
+          aria-label="Details"
         >
           <div id="detail" class="detail-stack" role="region" aria-label="Selected item details"></div>
         </div>

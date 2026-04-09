@@ -11,12 +11,14 @@ import {
 import { parsePrk, hexBytes } from "../../prk.js";
 import {
   parsePsxLevelGeometry,
+  parsePsxPerPartPreviewData,
   dumpPsxCharacterPadDiagnostics,
   PSX_CHARACTER_ASSEMBLY_STORAGE_KEY,
 } from "../../psx-model.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { parsePsxExternalTextureSource } from "../../psx-textures.js";
 
-import { initDomRefs, getDom } from "./dom.js";
+import { initDomRefs, getDom, getInspectorPanel } from "./dom.js";
 import { state } from "./state.js";
 import {
   STORAGE_WAV_AUTOPLAY,
@@ -26,13 +28,14 @@ import {
   STORAGE_AUTO_RESTORE,
   STORAGE_PSX_DEBUG_MODE,
   STORAGE_PSX_SURFACE_MODE,
-  STORAGE_INSPECTOR_TAB,
+  STORAGE_PSX_VIEW_MODE,
   HISTORY_DB_NAME,
   HISTORY_DB_VER,
   HISTORY_META,
   HISTORY_MAX_ENTRIES,
   INSPECTOR_WIDTH_MIN,
   INSPECTOR_WIDTH_MAX,
+  INSPECTOR_LAYOUT_MIN_VIEWPORT,
   DEFAULT_PREVIEW_HINT,
   MAX_FULL_HEX_COPY,
   TILE_BMP_THUMB_MAX_BYTES,
@@ -96,10 +99,6 @@ const {
   inspectorFileTitle,
   inspectorFileKind,
   inspectorPaneActions,
-  tabInspectorPreview,
-  tabInspectorDetails,
-  panelInspectorPreview,
-  panelInspectorDetails,
   previewPsxStatsHud,
   previewPsxToolbarEl,
   previewBlock,
@@ -108,6 +107,11 @@ const {
   previewHint,
   previewAudioWrap,
   previewAudio,
+  previewAudioPlay,
+  previewAudioSeek,
+  previewAudioTimeCurrent,
+  previewAudioTimeDuration,
+  previewAudioPlayIcon,
   previewVolumeRange,
   previewAutoplay,
   previewPrkWrap,
@@ -125,6 +129,10 @@ const {
   previewCopyBtn,
   previewPsxWrap,
   previewPsxCanvas,
+  previewPsxUvCanvas,
+  previewPsxCanvasStack,
+  previewPsxViewMode3d,
+  previewPsxViewModeUv,
   previewPsxDebugMode,
   previewPsxTextured,
   previewPsxAssemble,
@@ -133,20 +141,134 @@ const {
   previewPsxExportTextureBtn,
   previewPsxSourceInput,
   previewPsxSourceName,
+  previewPsxPartsAside,
+  previewPsxPartsToggle,
+  previewPsxPartList,
   statusEl,
   btnDownload,
   helpDialog,
   previewPopoutDialog,
   previewPopoutSlot,
   previewPopoutClose,
-  navDocs,
-  welcomeHelp,
   helpClose,
   recentWrap,
   recentList,
   recentAutoRestore,
   recentClear,
 } = getDom();
+
+/**
+ * @param {number} texW
+ * @param {number} texH
+ * @param {number} boxW
+ * @param {number} boxH
+ */
+function letterboxContain(texW, texH, boxW, boxH) {
+  const tw = Math.max(1, texW);
+  const th = Math.max(1, texH);
+  const s = Math.min(boxW / tw, boxH / th);
+  const dw = tw * s;
+  const dh = th * s;
+  const dx = (boxW - dw) / 2;
+  const dy = (boxH - dh) / 2;
+  return { dx, dy, dw, dh };
+}
+
+/**
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Uint8Array} rgba
+ * @param {number} tw
+ * @param {number} th
+ * @param {number} dx
+ * @param {number} dy
+ * @param {number} dw
+ * @param {number} dh
+ */
+function drawRgbaToCanvasRect(ctx, rgba, tw, th, dx, dy, dw, dh) {
+  const tmp = document.createElement("canvas");
+  tmp.width = tw;
+  tmp.height = th;
+  const tctx = tmp.getContext("2d");
+  if (!tctx) return;
+  const img = tctx.createImageData(tw, th);
+  const n = tw * th * 4;
+  const u8 = new Uint8ClampedArray(n);
+  u8.set(rgba.subarray(0, n));
+  img.data.set(u8);
+  tctx.putImageData(img, 0, 0);
+  ctx.drawImage(tmp, 0, 0, tw, th, dx, dy, dw, dh);
+}
+
+/**
+ * Texture sheet + UV triangle overlay (top-origin V, matches psx-model + DataTexture flipY=false).
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cw
+ * @param {number} ch
+ * @param {NonNullable<ReturnType<typeof parsePsxLevelGeometry>["textured"]>} textured
+ */
+function drawPsxUvTexturePreview(ctx, cw, ch, textured) {
+  const { indices, uvs, groups, materialKeys, textureBank } = textured;
+  ctx.fillStyle = "#12151c";
+  ctx.fillRect(0, 0, cw, ch);
+
+  const keysOrdered = [...new Set(materialKeys)];
+  const sheets = keysOrdered
+    .map((key) => {
+      const e = textureBank.get(key);
+      return e && e.width > 0 && e.height > 0
+        ? { key, rgba: e.rgba, width: e.width, height: e.height }
+        : null;
+    })
+    .filter(Boolean);
+
+  if (sheets.length === 0) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = "#8fa8c8";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText("No decoded texture — UV sheet unavailable.", 12, 24);
+    return;
+  }
+
+  const n = sheets.length;
+  const layout = new Map();
+  for (let i = 0; i < n; i++) {
+    const s = sheets[i];
+    const y0 = (i / n) * ch;
+    const y1 = ((i + 1) / n) * ch;
+    const bh = y1 - y0;
+    const lb = letterboxContain(s.width, s.height, cw, bh);
+    layout.set(s.key, { dx: lb.dx, dy: y0 + lb.dy, dw: lb.dw, dh: lb.dh });
+    drawRgbaToCanvasRect(ctx, s.rgba, s.width, s.height, lb.dx, y0 + lb.dy, lb.dw, lb.dh);
+  }
+
+  ctx.strokeStyle = "rgba(0, 240, 255, 0.82)";
+  ctx.lineWidth = 1;
+  ctx.lineJoin = "round";
+  for (const g of groups) {
+    const key = materialKeys[g.materialIndex];
+    const rect = layout.get(key);
+    if (!rect) continue;
+    const { dx, dy, dw, dh } = rect;
+    for (let j = g.start; j < g.start + g.count; j += 3) {
+      const ia = indices[j];
+      const ib = indices[j + 1];
+      const ic = indices[j + 2];
+      const ua = uvs[ia * 2];
+      const va = uvs[ia * 2 + 1];
+      const ub = uvs[ib * 2];
+      const vb = uvs[ib * 2 + 1];
+      const uc = uvs[ic * 2];
+      const vc = uvs[ic * 2 + 1];
+      ctx.beginPath();
+      ctx.moveTo(dx + ua * dw, dy + va * dh);
+      ctx.lineTo(dx + ub * dw, dy + vb * dh);
+      ctx.lineTo(dx + uc * dw, dy + vc * dh);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+}
 
 /**
  * @param {string} fileName
@@ -206,25 +328,6 @@ function inspectorKindLabel(entry) {
   const ext = getFileExtension(entry.name);
   if (!ext) return "Binary";
   return `${ext.replace(".", "").toUpperCase()} data`;
-}
-
-/**
- * @param {"preview" | "details"} which
- * @param {boolean} [persist]
- */
-function setInspectorTab(which, persist = true) {
-  const isPreview = which === "preview";
-  tabInspectorPreview.setAttribute("aria-selected", isPreview ? "true" : "false");
-  tabInspectorDetails.setAttribute("aria-selected", isPreview ? "false" : "true");
-  panelInspectorPreview.hidden = !isPreview;
-  panelInspectorDetails.hidden = isPreview;
-  if (persist) {
-    try {
-      localStorage.setItem(STORAGE_INSPECTOR_TAB, which);
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 /**
@@ -570,10 +673,6 @@ function togglePreviewPopout() {
   openPreviewPopout();
 }
 
-function openHelp() {
-  if (!helpDialog.open) helpDialog.showModal();
-}
-
 function setViewMode(/** @type {'welcome' | 'workspace'} */ mode) {
   const isWelcome = mode === "welcome";
   welcomeEl.classList.toggle("is-hidden", !isWelcome);
@@ -617,6 +716,7 @@ function hideAudioPreview() {
   previewAudio.removeAttribute("src");
   previewAudio.load();
   revokePreviewAudioUrl();
+  resetAudioPlayerUi();
   previewAudioWrap.classList.add("is-hidden");
 }
 
@@ -647,19 +747,31 @@ function hidePrkPreview() {
 
 function disposePsxPreview() {
   if (state.psxPreviewCtx) {
+    if ("viewAbort" in state.psxPreviewCtx && state.psxPreviewCtx.viewAbort) {
+      state.psxPreviewCtx.viewAbort.abort();
+    }
     cancelAnimationFrame(state.psxPreviewCtx.state.rafId);
     state.psxPreviewCtx.controls.dispose();
     const { overlayRef, scene } = state.psxPreviewCtx;
-    if (overlayRef.vertNormHelper) {
-      scene.remove(overlayRef.vertNormHelper);
-      const h = overlayRef.vertNormHelper;
+    for (const h of overlayRef.vertNormHelpers) {
+      scene.remove(h);
       if (typeof h.dispose === "function") h.dispose();
-      overlayRef.vertNormHelper = null;
     }
+    overlayRef.vertNormHelpers.length = 0;
     if (overlayRef.edgesLines) {
-      scene.remove(overlayRef.edgesLines);
-      overlayRef.edgesLines.geometry.dispose();
-      overlayRef.edgesLines.material.dispose();
+      const o = overlayRef.edgesLines;
+      if (o.parent) o.parent.remove(o);
+      if (o.type === "LineSegments") {
+        o.geometry.dispose();
+        o.material.dispose();
+      } else if (o.type === "Group") {
+        for (const c of o.children) {
+          if (c.type === "LineSegments") {
+            c.geometry.dispose();
+            c.material.dispose();
+          }
+        }
+      }
       overlayRef.edgesLines = null;
     }
     if (overlayRef.uDirLines) {
@@ -669,8 +781,19 @@ function disposePsxPreview() {
       overlayRef.uDirLines = null;
     }
     for (const g of state.psxPreviewCtx.geoms) g.dispose();
+    if (state.psxPreviewCtx.psxGround) {
+      scene.remove(state.psxPreviewCtx.psxGround);
+      state.psxPreviewCtx.psxGround.geometry.dispose();
+      state.psxPreviewCtx.psxGround.material.dispose();
+    }
     if (state.psxPreviewCtx.texMaterials) {
       for (const m of state.psxPreviewCtx.texMaterials) {
+        if ("map" in m && m.map) m.map.dispose();
+        m.dispose();
+      }
+    }
+    if (state.psxPreviewCtx.partTexMaterials) {
+      for (const m of state.psxPreviewCtx.partTexMaterials) {
         if ("map" in m && m.map) m.map.dispose();
         m.dispose();
       }
@@ -688,6 +811,12 @@ function disposePsxPreview() {
   previewPsxWrap.classList.add("is-hidden");
   previewPsxToolbarEl.classList.add("is-hidden");
   previewPsxStatsHud.textContent = "";
+  previewPsxPartsAside.classList.add("is-hidden");
+  previewPsxPartList.replaceChildren();
+  previewPsxPartsAside.classList.remove("is-collapsed");
+  previewPsxPartList.hidden = false;
+  previewPsxPartsToggle.setAttribute("aria-expanded", "true");
+  previewBlock.classList.remove("preview-block--psx-toolbar");
 }
 
 function updateCopyButtonState() {
@@ -1138,6 +1267,17 @@ function refreshPsxTileThumbsGrid() {
 }
 
 /**
+ * Cached `three` module for tile thumbnails (avoids repeated import + fixes missing helper).
+ * @returns {Promise<typeof import("three")>}
+ */
+function getThreeForThumb() {
+  if (!state.threeThumbImportPromise) {
+    state.threeThumbImportPromise = import("three");
+  }
+  return state.threeThumbImportPromise;
+}
+
+/**
  * Headless render of merged PSX mesh → PNG object URL (transparent background).
  * Uses embedded or external texture bank like the main preview when “Textured” mode is on.
  * @param {Uint8Array} data
@@ -1361,6 +1501,12 @@ async function loadPsxTileThumb(tile, imgEl, di, fi) {
   }
 }
 
+function applyBmpPreviewLayout() {
+  previewImageWrap.classList.toggle("preview-image-wrap--fit", state.bmpFitToFrame);
+  previewImageWrap.classList.toggle("preview-image-wrap--native", !state.bmpFitToFrame);
+  previewBmpFit.checked = state.bmpFitToFrame;
+}
+
 /**
  * @param {Uint8Array} data
  */
@@ -1419,7 +1565,57 @@ function wavPreviewHintBase() {
   if (previewAutoplay.checked) {
     return "WAV — autoplay is on when you pick a file (browser may block until you’ve clicked the page). Volume is preview-only.";
   }
-  return "WAV — press play to listen. Volume is preview-only.";
+  return "WAV — press play on the player to listen. Volume is preview-only.";
+}
+
+/** @type {boolean} */
+let wavSeekDragging = false;
+
+/**
+ * @param {number} seconds
+ */
+function formatWavTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function syncAudioPlayButton() {
+  const paused = previewAudio.paused;
+  previewAudioPlayIcon.textContent = paused ? "play_arrow" : "pause";
+  previewAudioPlay.setAttribute("aria-label", paused ? "Play" : "Pause");
+}
+
+function syncAudioPlayerUi() {
+  const d = previewAudio.duration;
+  const dur = Number.isFinite(d) && d > 0 ? d : 0;
+  const cur = Number.isFinite(previewAudio.currentTime) ? previewAudio.currentTime : 0;
+  previewAudioTimeCurrent.textContent = formatWavTime(cur);
+  previewAudioTimeDuration.textContent = formatWavTime(dur);
+  if (dur > 0) {
+    previewAudioSeek.max = String(dur);
+    if (!wavSeekDragging) {
+      previewAudioSeek.value = String(cur);
+    }
+    previewAudioSeek.setAttribute("aria-valuemax", String(dur));
+    previewAudioSeek.setAttribute("aria-valuenow", String(cur));
+    previewAudioSeek.setAttribute("aria-valuetext", `${formatWavTime(cur)} / ${formatWavTime(dur)}`);
+  } else {
+    previewAudioSeek.max = "1";
+    previewAudioSeek.value = "0";
+  }
+  syncAudioPlayButton();
+}
+
+function resetAudioPlayerUi() {
+  wavSeekDragging = false;
+  previewAudioSeek.max = "1";
+  previewAudioSeek.value = "0";
+  previewAudioTimeCurrent.textContent = "0:00";
+  previewAudioTimeDuration.textContent = "0:00";
+  previewAudioPlayIcon.textContent = "play_arrow";
+  previewAudioPlay.setAttribute("aria-label", "Play");
 }
 
 function showWavPreview(data) {
@@ -1446,7 +1642,65 @@ function showWavPreview(data) {
         "WAV — autoplay was blocked; press play on the player. (Some browsers require a click on the page first.)";
     });
   }
+  syncAudioPlayerUi();
   updateCopyButtonState();
+}
+
+/**
+ * Circular ground disc: radial gradient + subtle grid (cyan on dark, matches PSX preview).
+ * @param {typeof import("three")} THREE
+ * @returns {import("three").Mesh}
+ */
+function createPsxPreviewGround(THREE) {
+  const radius = 3.45;
+  const geo = new THREE.CircleGeometry(radius, 96);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColorCenter: { value: new THREE.Color(0x1a2330) },
+      uColorEdge: { value: new THREE.Color(0x06080c) },
+      uGridColor: { value: new THREE.Color(0x00f0ff) },
+      uGridDiv: { value: 5.5 },
+      uGridOpacity: { value: 0.15 },
+      uRadius: { value: radius },
+    },
+    vertexShader: `
+      varying vec2 vPos;
+      void main() {
+        vPos = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColorCenter;
+      uniform vec3 uColorEdge;
+      uniform vec3 uGridColor;
+      uniform float uGridDiv;
+      uniform float uGridOpacity;
+      uniform float uRadius;
+      varying vec2 vPos;
+      void main() {
+        float d = length(vPos) / uRadius;
+        float t = clamp(d, 0.0, 1.0);
+        vec3 base = mix(uColorCenter, uColorEdge, t * t);
+        float a = 1.0 - smoothstep(0.36, 0.995, d);
+        vec2 g = vPos * uGridDiv;
+        vec2 f = abs(fract(g - 0.5) - 0.5) / fwidth(g);
+        float line = min(f.x, f.y);
+        float grid = 1.0 - min(line, 1.0);
+        float gridW = grid * uGridOpacity;
+        vec3 rgb = mix(base, uGridColor, gridW);
+        gl_FragColor = vec4(rgb, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    extensions: { derivatives: true },
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.renderOrder = -1;
+  return mesh;
 }
 
 /**
@@ -1464,6 +1718,20 @@ async function showPsxPreview(data) {
   const parsed = parsePsxLevelGeometry(data, getActivePsxTextureSource());
   if (!parsed) return false;
   setCurrentPsxExportTextures(parsed);
+
+  /** @type {"3d" | "uv"} */
+  let viewMode = "3d";
+
+  /** UV / texture canvas: pan (CSS px) + zoom (1 = fit sheet to viewport box used by draw). */
+  let uvPanX = 0;
+  let uvPanY = 0;
+  let uvZoom = 1;
+  const UV_ZOOM_MIN = 0.125;
+  const UV_ZOOM_MAX = 32;
+  const clampUvZoom = (/** @type {number} */ z) => Math.min(UV_ZOOM_MAX, Math.max(UV_ZOOM_MIN, z));
+  let uvDragPointerId = /** @type {number | null} */ (null);
+  let uvLastClientX = 0;
+  let uvLastClientY = 0;
 
   let THREE;
   /** @type {new (cam: import("three").PerspectiveCamera, el: HTMLElement) => { update: () => void; dispose: () => void }} */
@@ -1488,8 +1756,11 @@ async function showPsxPreview(data) {
     parsed.textured.positions.length >= 9 &&
     parsed.textured.indices.length >= 3;
 
-  /** @param {Float32Array} positions @param {Uint32Array} indices @param {Float32Array | null} uvs @param {Array<{ start: number, count: number, materialIndex: number }> | null} groups */
-  const buildMeshGeometry = (positions, indices, uvs, groups) => {
+  previewPsxViewModeUv.disabled = !hasTextured;
+
+  /** @param {Float32Array} positions @param {Uint32Array} indices @param {Float32Array | null} uvs @param {Array<{ start: number, count: number, materialIndex: number }> | null} groups @param {{ normalize?: boolean }} [opts] */
+  const buildMeshGeometry = (positions, indices, uvs, groups, opts = {}) => {
+    const normalize = opts.normalize !== false;
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     if (uvs) geom.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
@@ -1510,21 +1781,76 @@ async function showPsxPreview(data) {
         geom.addGroup(g.start, g.count, g.materialIndex);
       }
     }
-    geom.computeBoundingBox();
-    const bb = geom.boundingBox;
-    if (bb) {
-      const c = new THREE.Vector3();
-      bb.getCenter(c);
-      const size = new THREE.Vector3();
-      bb.getSize(size);
-      geom.translate(-c.x, -c.y, -c.z);
-      const mx = Math.max(size.x, size.y, size.z, 1e-6);
-      const sc = 1 / mx;
-      geom.scale(sc, sc, sc);
+    if (normalize) {
+      geom.computeBoundingBox();
+      const bb = geom.boundingBox;
+      if (bb) {
+        const c = new THREE.Vector3();
+        bb.getCenter(c);
+        const size = new THREE.Vector3();
+        bb.getSize(size);
+        geom.translate(-c.x, -c.y, -c.z);
+        const mx = Math.max(size.x, size.y, size.z, 1e-6);
+        const sc = 1 / mx;
+        geom.scale(sc, sc, sc);
+      }
+      geom.computeVertexNormals();
     }
-    geom.computeVertexNormals();
     return geom;
   };
+
+  /**
+   * @param {import("three").BufferGeometry[]} geoms
+   */
+  function normalizeGeometriesTogether(geoms) {
+    const box = new THREE.Box3();
+    for (const g of geoms) {
+      g.computeBoundingBox();
+      if (g.boundingBox) box.union(g.boundingBox);
+    }
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const mx = Math.max(size.x, size.y, size.z, 1e-6);
+    const sc = 1 / mx;
+    for (const g of geoms) {
+      g.translate(-center.x, -center.y, -center.z);
+      g.scale(sc, sc, sc);
+    }
+    for (const g of geoms) g.computeVertexNormals();
+  }
+
+  /** @param {typeof import("three")} THREE @param {import("../../psx-textures.js").PsxDecodedTexture | undefined} entry */
+  function makePsxTextureMaterial(THREE, entry) {
+    /** @type {import("three").Texture | null} */
+    let map = null;
+    if (entry) {
+      const dt = new THREE.DataTexture(entry.rgba, entry.width, entry.height, THREE.RGBAFormat);
+      dt.generateMipmaps = false;
+      dt.minFilter = THREE.NearestFilter;
+      dt.magFilter = THREE.NearestFilter;
+      dt.wrapS = THREE.ClampToEdgeWrapping;
+      dt.wrapT = THREE.ClampToEdgeWrapping;
+      dt.flipY = false;
+      dt.needsUpdate = true;
+      if ("colorSpace" in dt) dt.colorSpace = THREE.SRGBColorSpace;
+      map = dt;
+    }
+    return new THREE.MeshStandardMaterial({
+      map,
+      color: map ? 0xffffff : 0x8fa8c8,
+      metalness: 0.05,
+      roughness: 0.85,
+      side: THREE.DoubleSide,
+      flatShading: true,
+      emissive: map ? 0x000000 : 0x1a2330,
+      emissiveIntensity: map ? 0 : 0.18,
+      transparent: !!map,
+      alphaTest: map ? 0.5 : 0,
+      depthWrite: true,
+    });
+  }
 
   /**
    * Colors each triangle by the sign of its UV area in the current index order.
@@ -1695,43 +2021,59 @@ async function showPsxPreview(data) {
     texMaterials = [];
     for (let mi = 0; mi < t.materialKeys.length; mi++) {
       const key = t.materialKeys[mi];
-      const entry = t.textureBank.get(key);
-      /** @type {import("three").Texture | null} */
-      let map = null;
-      if (entry) {
-        const dt = new THREE.DataTexture(
-          entry.rgba,
-          entry.width,
-          entry.height,
-          THREE.RGBAFormat
-        );
-        // PSX textures are frequently NPOT; default mipmapped filtering can make them incomplete/black.
-        dt.generateMipmaps = false;
-        dt.minFilter = THREE.NearestFilter;
-        dt.magFilter = THREE.NearestFilter;
-        dt.wrapS = THREE.ClampToEdgeWrapping;
-        dt.wrapT = THREE.ClampToEdgeWrapping;
-        // Paired with psx-model.js: vf=vb/h, flipY=false.
-        dt.flipY = false;
-        dt.needsUpdate = true;
-        if ("colorSpace" in dt) dt.colorSpace = THREE.SRGBColorSpace;
-        map = dt;
+      texMaterials.push(makePsxTextureMaterial(THREE, t.textureBank.get(key)));
+    }
+  }
+
+  const perPartRaw = parsePsxPerPartPreviewData(data, getActivePsxTextureSource(), parsed);
+  /** @type {Array<null | { plainGeom: import("three").BufferGeometry, texturedGeom: import("three").BufferGeometry | null, texMats: import("three").MeshStandardMaterial[] | null, uvWindingGeom: import("three").BufferGeometry | null, uDirLinesGeom: import("three").BufferGeometry | null }>} */
+  const partAssets = [];
+  let usePartGroup = false;
+  if (perPartRaw) {
+    let nOk = 0;
+    for (const pr of perPartRaw) {
+      if (pr && pr.positions.length >= 9) nOk++;
+    }
+    if (nOk >= 2) {
+      /** @type {import("three").BufferGeometry[]} */
+      const normList = [];
+      for (let m = 0; m < perPartRaw.length; m++) {
+        const pr = perPartRaw[m];
+        if (!pr || pr.positions.length < 9) {
+          partAssets.push(null);
+          continue;
+        }
+        const pg = buildMeshGeometry(pr.positions, pr.indices, null, null, { normalize: false });
+        let texMats = null;
+        let tg = null;
+        let uvw = null;
+        let udir = null;
+        if (pr.textured && pr.textured.positions.length >= 9) {
+          const pt = pr.textured;
+          tg = buildMeshGeometry(pt.positions, pt.indices, pt.uvs, pt.groups, { normalize: false });
+          texMats = [];
+          for (let mi = 0; mi < pt.materialKeys.length; mi++) {
+            const key = pt.materialKeys[mi];
+            texMats.push(makePsxTextureMaterial(THREE, pt.textureBank.get(key)));
+          }
+          const uvDebug = buildUvWindingDebugGeometry(pt.positions, pt.indices, pt.uvs);
+          if (uvDebug) uvw = uvDebug.geom;
+          udir = buildUvDirectionLines(tg);
+        }
+        partAssets.push({ plainGeom: pg, texturedGeom: tg, texMats, uvWindingGeom: uvw, uDirLinesGeom: udir });
+        normList.push(tg ?? pg);
       }
-      texMaterials.push(
-        new THREE.MeshStandardMaterial({
-          map,
-          color: map ? 0xffffff : 0x8fa8c8,
-          metalness: 0.05,
-          roughness: 0.85,
-          side: THREE.DoubleSide,
-          flatShading: true,
-          emissive: map ? 0x000000 : 0x1a2230,
-          emissiveIntensity: map ? 0 : 0.18,
-          transparent: !!map,
-          alphaTest: map ? 0.5 : 0,
-          depthWrite: true,
-        })
-      );
+      normalizeGeometriesTogether(normList);
+      usePartGroup = true;
+    }
+  }
+
+  /** @type {import("three").MeshStandardMaterial[]} */
+  const partTexMaterials = [];
+  if (usePartGroup) {
+    for (const pa of partAssets) {
+      if (!pa?.texMats) continue;
+      for (const m of pa.texMats) partTexMaterials.push(m);
     }
   }
 
@@ -1781,11 +2123,34 @@ async function showPsxPreview(data) {
   }
 
   const activeGeom = () => (texturedSurface && texturedGeom ? texturedGeom : plainGeom);
+  /** @param {NonNullable<(typeof partAssets)[number]>} pa */
+  const activeGeomPart = (pa) => (texturedSurface && pa.texturedGeom ? pa.texturedGeom : pa.plainGeom);
   const hasTexMaterials = !!texMaterials && texMaterials.length > 0;
-  const mesh = new THREE.Mesh(activeGeom(), texturedSurface && hasTexMaterials ? texMaterials : matShaded);
+  /** @type {import("three").Mesh | import("three").Group} */
+  let mesh;
+  if (usePartGroup && partAssets.some((p) => p)) {
+    mesh = new THREE.Group();
+    for (let m = 0; m < partAssets.length; m++) {
+      const pa = partAssets[m];
+      if (!pa) continue;
+      const g = activeGeomPart(pa);
+      const mats = texturedSurface && pa.texMats && pa.texMats.length ? pa.texMats : matShaded;
+      const cm = new THREE.Mesh(g, mats);
+      cm.userData.partIndex = m;
+      cm.userData.partEnabled = true;
+      cm.visible = true;
+      mesh.add(cm);
+    }
+  } else {
+    mesh = new THREE.Mesh(activeGeom(), texturedSurface && hasTexMaterials ? texMaterials : matShaded);
+  }
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x12151c);
+  const psxGround = createPsxPreviewGround(THREE);
+  const gbb = new THREE.Box3().setFromObject(mesh);
+  if (!gbb.isEmpty()) psxGround.position.y = gbb.min.y - 0.02;
+  scene.add(psxGround);
   scene.add(mesh);
   scene.add(new THREE.AmbientLight(0x7590b8, 0.78));
   scene.add(new THREE.HemisphereLight(0x8a9cad, 0x242830, 0.52));
@@ -1798,25 +2163,34 @@ async function showPsxPreview(data) {
 
   /** Mutable refs for helpers so dispose and applyDebugMode stay in sync. */
   const overlayRef = {
-    /** @type {ThreeObject3D | null} */
-    vertNormHelper: null,
-    /** @type {import("three").LineSegments | null} */
+    /** @type {ThreeObject3D[]} */
+    vertNormHelpers: [],
+    /** @type {import("three").LineSegments | import("three").Group | null} */
     edgesLines: null,
     /** @type {import("three").LineSegments | null} */
     uDirLines: null,
   };
 
   function clearPsxDebugOverlays() {
-    if (overlayRef.vertNormHelper) {
-      scene.remove(overlayRef.vertNormHelper);
-      const h = overlayRef.vertNormHelper;
+    for (const h of overlayRef.vertNormHelpers) {
+      scene.remove(h);
       if (typeof h.dispose === "function") h.dispose();
-      overlayRef.vertNormHelper = null;
     }
+    overlayRef.vertNormHelpers.length = 0;
     if (overlayRef.edgesLines) {
-      scene.remove(overlayRef.edgesLines);
-      overlayRef.edgesLines.geometry.dispose();
-      overlayRef.edgesLines.material.dispose();
+      const o = overlayRef.edgesLines;
+      if (o.parent) o.parent.remove(o);
+      if (o.type === "LineSegments") {
+        o.geometry.dispose();
+        o.material.dispose();
+      } else if (o.type === "Group") {
+        for (const c of o.children) {
+          if (c.type === "LineSegments") {
+            c.geometry.dispose();
+            c.material.dispose();
+          }
+        }
+      }
       overlayRef.edgesLines = null;
     }
     if (overlayRef.uDirLines) {
@@ -1857,31 +2231,193 @@ async function showPsxPreview(data) {
         ? " Textured surface."
         : " Untextured surface."
       : "";
+    if (viewMode === "uv") {
+      hint += " UV / texture view: sheet + triangle edges.";
+    }
     previewHint.textContent = hint.trim() || "—";
+    const orbitEl = previewPsxWrap.querySelector(".preview-psx-hint");
+    if (orbitEl) {
+      orbitEl.textContent =
+        viewMode === "uv"
+          ? "Drag to pan · scroll to zoom · double-click to reset. Switch to 3D mesh to orbit."
+          : "Drag to orbit · scroll to zoom";
+    }
   }
 
   function applyDebugMode(mode) {
     clearPsxDebugOverlays();
     currentDebugMode = mode;
     texturedSurface = hasTextured && previewPsxTextured.checked;
-    mesh.geometry = activeGeom();
     mesh.visible = true;
     syncPsxHint();
+
+    if (mesh.isGroup) {
+      if (mode === "shaded") {
+        for (const child of mesh.children) {
+          if (child.type !== "Mesh") continue;
+          const pi = child.userData.partIndex;
+          const pa = partAssets[pi];
+          if (!pa) continue;
+          child.geometry = activeGeomPart(pa);
+          const hasPartTex = !!(texturedSurface && pa.texMats && pa.texMats.length);
+          child.material = hasPartTex ? pa.texMats : matShaded;
+          child.visible = !!child.userData.partEnabled;
+        }
+        return;
+      }
+      switch (mode) {
+        case "uv-winding":
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            const g = pa.uvWindingGeom ? pa.uvWindingGeom : activeGeomPart(pa);
+            child.geometry = g;
+            child.material = pa.uvWindingGeom
+              ? mats.uvWinding
+              : texturedSurface && pa.texMats && pa.texMats.length
+                ? pa.texMats
+                : matShaded;
+            child.visible = !!child.userData.partEnabled;
+          }
+          break;
+        case "u-dir": {
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            child.geometry = activeGeomPart(pa);
+            const hasPartTex = !!(texturedSurface && pa.texMats && pa.texMats.length);
+            child.material = hasPartTex ? pa.texMats : matShaded;
+            child.visible = !!child.userData.partEnabled;
+          }
+          /** @type {import("three").BufferGeometry[]} */
+          const udirParts = [];
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            if (!child.userData.partEnabled) continue;
+            const pa = partAssets[child.userData.partIndex];
+            if (!pa?.uDirLinesGeom) continue;
+            udirParts.push(pa.uDirLinesGeom.clone());
+          }
+          if (udirParts.length) {
+            const merged =
+              udirParts.length === 1 ? udirParts[0] : mergeGeometries(udirParts);
+            if (udirParts.length > 1) {
+              for (const g of udirParts) g.dispose();
+            }
+            if (!merged) break;
+            overlayRef.uDirLines = new THREE.LineSegments(
+              merged,
+              new THREE.LineBasicMaterial({
+                vertexColors: true,
+                toneMapped: false,
+              })
+            );
+            scene.add(overlayRef.uDirLines);
+          }
+          break;
+        }
+        case "wireframe":
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            child.geometry = activeGeomPart(pa);
+            child.material = mats.wire;
+            child.visible = !!child.userData.partEnabled;
+          }
+          break;
+        case "normals":
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            child.geometry = activeGeomPart(pa);
+            child.material = mats.normal;
+            child.visible = !!child.userData.partEnabled;
+          }
+          break;
+        case "vert-norms":
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            child.geometry = activeGeomPart(pa);
+            const hasPartTex = !!(texturedSurface && pa.texMats && pa.texMats.length);
+            child.material = hasPartTex ? pa.texMats : matShaded;
+            child.visible = !!child.userData.partEnabled;
+            if (child.userData.partEnabled) {
+              const h = new VertexNormalsHelperCtor(child, 0.12, 0x55e0ff);
+              scene.add(h);
+              overlayRef.vertNormHelpers.push(h);
+            }
+          }
+          break;
+        case "edges": {
+          const edgesGroup = new THREE.Group();
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            const g = activeGeomPart(pa);
+            child.geometry = g;
+            if (!child.userData.partEnabled) {
+              child.visible = false;
+              continue;
+            }
+            child.visible = false;
+            const edgeGeom = new THREE.EdgesGeometry(g, 32);
+            const ls = new THREE.LineSegments(
+              edgeGeom,
+              new THREE.LineBasicMaterial({ color: 0x7ae8ff })
+            );
+            edgesGroup.add(ls);
+          }
+          mesh.add(edgesGroup);
+          overlayRef.edgesLines = edgesGroup;
+          break;
+        }
+        default:
+          for (const child of mesh.children) {
+            if (child.type !== "Mesh") continue;
+            const pi = child.userData.partIndex;
+            const pa = partAssets[pi];
+            if (!pa) continue;
+            child.geometry = activeGeomPart(pa);
+            const hasPartTex = !!(texturedSurface && pa.texMats && pa.texMats.length);
+            child.material = hasPartTex ? pa.texMats : matShaded;
+            child.visible = !!child.userData.partEnabled;
+          }
+      }
+      return;
+    }
+
+    /** @type {import("three").Mesh} */
+    const meshOne = mesh;
+    meshOne.geometry = activeGeom();
+    meshOne.visible = true;
     if (texturedSurface && hasTexMaterials && texMaterials && mode === "shaded") {
-      mesh.material = texMaterials;
+      meshOne.material = texMaterials;
       return;
     }
     switch (mode) {
       case "uv-winding":
-        mesh.geometry = uvWindingGeom ?? activeGeom();
-        mesh.material = uvWindingGeom
+        meshOne.geometry = uvWindingGeom ?? activeGeom();
+        meshOne.material = uvWindingGeom
           ? mats.uvWinding
           : texturedSurface && hasTexMaterials && texMaterials
             ? texMaterials
             : mats.shaded;
         break;
       case "u-dir":
-        mesh.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
+        meshOne.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
         if (uDirLinesGeom) {
           overlayRef.uDirLines = new THREE.LineSegments(
             uDirLinesGeom.clone(),
@@ -1894,19 +2430,21 @@ async function showPsxPreview(data) {
         }
         break;
       case "wireframe":
-        mesh.material = mats.wire;
+        meshOne.material = mats.wire;
         break;
       case "normals":
-        mesh.material = mats.normal;
+        meshOne.material = mats.normal;
         break;
-      case "vert-norms":
-        mesh.material = mats.shaded;
-        overlayRef.vertNormHelper = new VertexNormalsHelperCtor(mesh, 0.12, 0x55e0ff);
-        scene.add(overlayRef.vertNormHelper);
+      case "vert-norms": {
+        meshOne.material = mats.shaded;
+        const hvn = new VertexNormalsHelperCtor(meshOne, 0.12, 0x55e0ff);
+        scene.add(hvn);
+        overlayRef.vertNormHelpers.push(hvn);
         break;
+      }
       case "edges": {
-        mesh.visible = false;
-        const eg = new THREE.EdgesGeometry(geom, 32);
+        meshOne.visible = false;
+        const eg = new THREE.EdgesGeometry(meshOne.geometry, 32);
         overlayRef.edgesLines = new THREE.LineSegments(
           eg,
           new THREE.LineBasicMaterial({ color: 0x7ae8ff })
@@ -1915,16 +2453,18 @@ async function showPsxPreview(data) {
         break;
       }
       default:
-        mesh.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
+        meshOne.material = texturedSurface && hasTexMaterials && texMaterials ? texMaterials : mats.shaded;
     }
   }
 
   const renderer = new THREE.WebGLRenderer({
     canvas: previewPsxCanvas,
     antialias: true,
-    alpha: false,
+    alpha: true,
+    premultipliedAlpha: false,
     powerPreference: "low-power",
   });
+  renderer.setClearColor(scene.background, 1);
   const camera = new THREE.PerspectiveCamera(45, 1, 0.03, 50);
   camera.position.set(0.85, 0.65, 1.35);
 
@@ -1932,22 +2472,184 @@ async function showPsxPreview(data) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0, 0);
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.45;
   controls.update();
 
+  const psxFrameState = { rafId: 0 };
+  function tick() {
+    if (viewMode !== "3d") return;
+    psxFrameState.rafId = requestAnimationFrame(tick);
+    controls.update();
+    for (const h of overlayRef.vertNormHelpers) {
+      if (h && typeof h.update === "function") h.update();
+    }
+    renderer.render(scene, camera);
+  }
+
   const resize = () => {
-    const r = previewPsxWrap.getBoundingClientRect();
+    const r = previewPsxCanvasStack.getBoundingClientRect();
     const W = Math.max(180, Math.floor(r.width));
-    const hintEl = previewPsxWrap.querySelector(".preview-psx-hint");
-    const hintH = hintEl ? Math.ceil(hintEl.getBoundingClientRect().height) + 14 : 44;
-    const H = Math.max(200, Math.floor(r.height - hintH));
+    const H = Math.max(200, Math.floor(r.height));
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(W, H, false);
     camera.aspect = W / H;
     camera.updateProjectionMatrix();
+    if (viewMode === "uv") drawUvSheet();
   };
+
+  function drawUvSheet() {
+    if (!hasTextured || !parsed.textured) return;
+    const ctx = previewPsxUvCanvas.getContext("2d");
+    if (!ctx) return;
+    const r = previewPsxCanvasStack.getBoundingClientRect();
+    const W = Math.max(2, Math.floor(r.width));
+    const H = Math.max(2, Math.floor(r.height));
+    const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
+    previewPsxUvCanvas.width = Math.floor(W * dpr);
+    previewPsxUvCanvas.height = Math.floor(H * dpr);
+    previewPsxUvCanvas.style.width = `${W}px`;
+    previewPsxUvCanvas.style.height = `${H}px`;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#12151c";
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(uvPanX, uvPanY);
+    ctx.scale(uvZoom, uvZoom);
+    drawPsxUvTexturePreview(ctx, W, H, parsed.textured);
+    ctx.restore();
+  }
+
+  const viewModeAbort = new AbortController();
+
+  function uvClientToCanvas(/** @type {number} */ cx, /** @type {number} */ cy) {
+    const b = previewPsxUvCanvas.getBoundingClientRect();
+    return { x: cx - b.left, y: cy - b.top };
+  }
+
+  previewPsxUvCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      if (viewMode !== "uv") return;
+      e.preventDefault();
+      const { x: mx, y: my } = uvClientToCanvas(e.clientX, e.clientY);
+      const wx = (mx - uvPanX) / uvZoom;
+      const wy = (my - uvPanY) / uvZoom;
+      const nextZoom = clampUvZoom(uvZoom * Math.exp(-e.deltaY * 0.002));
+      uvPanX = mx - wx * nextZoom;
+      uvPanY = my - wy * nextZoom;
+      uvZoom = nextZoom;
+      drawUvSheet();
+    },
+    { passive: false, signal: viewModeAbort.signal }
+  );
+
+  previewPsxUvCanvas.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (viewMode !== "uv" || e.button !== 0) return;
+      e.preventDefault();
+      uvDragPointerId = e.pointerId;
+      uvLastClientX = e.clientX;
+      uvLastClientY = e.clientY;
+      previewPsxUvCanvas.setPointerCapture(e.pointerId);
+      previewPsxUvCanvas.style.cursor = "grabbing";
+    },
+    { signal: viewModeAbort.signal }
+  );
+
+  previewPsxUvCanvas.addEventListener(
+    "pointermove",
+    (e) => {
+      if (viewMode !== "uv" || e.pointerId !== uvDragPointerId || uvDragPointerId === null) return;
+      const dx = e.clientX - uvLastClientX;
+      const dy = e.clientY - uvLastClientY;
+      uvLastClientX = e.clientX;
+      uvLastClientY = e.clientY;
+      uvPanX += dx;
+      uvPanY += dy;
+      drawUvSheet();
+    },
+    { passive: true, signal: viewModeAbort.signal }
+  );
+
+  function uvEndDrag(/** @type {PointerEvent} */ e) {
+    if (e.pointerId !== uvDragPointerId) return;
+    uvDragPointerId = null;
+    previewPsxUvCanvas.style.cursor = "grab";
+    try {
+      previewPsxUvCanvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  previewPsxUvCanvas.addEventListener("pointerup", uvEndDrag, { signal: viewModeAbort.signal });
+  previewPsxUvCanvas.addEventListener("pointercancel", uvEndDrag, { signal: viewModeAbort.signal });
+
+  previewPsxUvCanvas.addEventListener(
+    "dblclick",
+    (e) => {
+      if (viewMode !== "uv") return;
+      e.preventDefault();
+      uvPanX = 0;
+      uvPanY = 0;
+      uvZoom = 1;
+      drawUvSheet();
+    },
+    { signal: viewModeAbort.signal }
+  );
+
+  function syncPsxViewModeUi() {
+    const is3d = viewMode === "3d";
+    previewPsxViewMode3d.classList.toggle("is-active", is3d);
+    previewPsxViewModeUv.classList.toggle("is-active", !is3d);
+    previewPsxViewMode3d.setAttribute("aria-checked", is3d ? "true" : "false");
+    previewPsxViewModeUv.setAttribute("aria-checked", is3d ? "false" : "true");
+  }
+
+  function setViewMode(next) {
+    const isUv = next === "uv" && hasTextured && parsed.textured;
+    viewMode = isUv ? "uv" : "3d";
+    try {
+      localStorage.setItem(STORAGE_PSX_VIEW_MODE, viewMode);
+    } catch {
+      /* ignore */
+    }
+    syncPsxViewModeUi();
+    if (viewMode === "uv") {
+      cancelAnimationFrame(psxFrameState.rafId);
+      psxFrameState.rafId = 0;
+      previewPsxCanvas.classList.add("is-hidden");
+      previewPsxUvCanvas.classList.remove("is-hidden");
+      previewPsxUvCanvas.setAttribute("aria-hidden", "false");
+      previewPsxUvCanvas.style.cursor = "grab";
+      controls.enabled = false;
+      previewPsxDebugMode.disabled = true;
+      resize();
+      drawUvSheet();
+    } else {
+      uvDragPointerId = null;
+      previewPsxUvCanvas.style.removeProperty("cursor");
+      previewPsxUvCanvas.classList.add("is-hidden");
+      previewPsxUvCanvas.setAttribute("aria-hidden", "true");
+      previewPsxCanvas.classList.remove("is-hidden");
+      controls.enabled = true;
+      previewPsxDebugMode.disabled = false;
+      resize();
+      cancelAnimationFrame(psxFrameState.rafId);
+      psxFrameState.rafId = requestAnimationFrame(tick);
+    }
+    syncPsxHint();
+  }
+
+  previewPsxViewMode3d.addEventListener("click", () => setViewMode("3d"), { signal: viewModeAbort.signal });
+  previewPsxViewModeUv.addEventListener("click", () => setViewMode("uv"), { signal: viewModeAbort.signal });
 
   previewPsxWrap.classList.remove("is-hidden");
   previewPsxToolbarEl.classList.remove("is-hidden");
+  previewBlock.classList.add("preview-block--psx-toolbar");
   previewEl.classList.add("is-hidden");
   previewEl.textContent = "";
   previewEl.classList.remove("is-idle");
@@ -1981,19 +2683,8 @@ async function showPsxPreview(data) {
   hintBase = hint;
   syncPsxHint();
 
-  resize();
   const ro = new ResizeObserver(() => resize());
-  ro.observe(previewPsxWrap);
-
-  const state = { rafId: 0 };
-  function tick() {
-    state.rafId = requestAnimationFrame(tick);
-    controls.update();
-    const h = overlayRef.vertNormHelper;
-    if (h && typeof h.update === "function") h.update();
-    renderer.render(scene, camera);
-  }
-  tick();
+  ro.observe(previewPsxCanvasStack);
 
   /** @type {string} */
   let initialMode = "shaded";
@@ -2011,18 +2702,91 @@ async function showPsxPreview(data) {
   previewPsxDebugMode.value = initialMode;
   applyDebugMode(initialMode);
 
+  /** @type {"3d" | "uv"} */
+  let initialView = "3d";
+  try {
+    const sv = localStorage.getItem(STORAGE_PSX_VIEW_MODE);
+    if (sv === "uv" && hasTextured && parsed.textured) initialView = "uv";
+  } catch {
+    /* ignore */
+  }
+  setViewMode(initialView);
+
+  if (usePartGroup) {
+    previewPsxPartsAside.classList.remove("is-hidden");
+    previewPsxPartsAside.classList.remove("is-collapsed");
+    previewPsxPartList.hidden = false;
+    previewPsxPartsToggle.setAttribute("aria-expanded", "true");
+    previewPsxPartList.replaceChildren();
+    for (let m = 0; m < partAssets.length; m++) {
+      const pa = partAssets[m];
+      if (!pa) continue;
+      const id = `preview-psx-part-${m}`;
+      const label = document.createElement("label");
+      label.className = "preview-psx-part-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.id = id;
+      const span = document.createElement("span");
+      span.textContent = `Part ${m}`;
+      label.appendChild(cb);
+      label.appendChild(span);
+      previewPsxPartList.appendChild(label);
+      cb.addEventListener(
+        "change",
+        () => {
+          const ch = mesh.children.find((c) => c.userData.partIndex === m);
+          if (ch) ch.userData.partEnabled = cb.checked;
+          applyDebugMode(previewPsxDebugMode.value);
+        },
+        { signal: viewModeAbort.signal }
+      );
+    }
+    previewPsxPartsToggle.addEventListener(
+      "click",
+      () => {
+        const collapsed = previewPsxPartsAside.classList.toggle("is-collapsed");
+        previewPsxPartList.hidden = collapsed;
+        previewPsxPartsToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      },
+      { signal: viewModeAbort.signal }
+    );
+  } else {
+    previewPsxPartsAside.classList.add("is-hidden");
+    previewPsxPartList.replaceChildren();
+    previewPsxPartsAside.classList.remove("is-collapsed");
+    previewPsxPartList.hidden = false;
+    previewPsxPartsToggle.setAttribute("aria-expanded", "true");
+  }
+
+  /** @type {import("three").BufferGeometry[]} */
+  const psxDisposeGeoms = [plainGeom, texturedGeom, uvWindingGeom, uDirLinesGeom].filter(Boolean);
+  if (usePartGroup) {
+    for (const pa of partAssets) {
+      if (!pa) continue;
+      if (pa.plainGeom) psxDisposeGeoms.push(pa.plainGeom);
+      if (pa.texturedGeom) psxDisposeGeoms.push(pa.texturedGeom);
+      if (pa.uvWindingGeom) psxDisposeGeoms.push(pa.uvWindingGeom);
+      if (pa.uDirLinesGeom) psxDisposeGeoms.push(pa.uDirLinesGeom);
+    }
+  }
+
   state.psxPreviewCtx = {
-    state,
+    state: psxFrameState,
     renderer,
     controls,
-    geoms: [plainGeom, texturedGeom, uvWindingGeom, uDirLinesGeom].filter(Boolean),
+    geoms: psxDisposeGeoms,
     scene,
     mesh,
+    psxGround,
     mats,
     texMaterials: hasTexMaterials ? texMaterials : null,
+    partTexMaterials: partTexMaterials.length ? partTexMaterials : null,
     overlayRef,
     applyDebugMode,
     ro,
+    viewAbort: viewModeAbort,
   };
 
   updateCopyButtonState();
@@ -2584,7 +3348,6 @@ function showDirDetail(di) {
   inspectorFileTitle.textContent = dir.name || "(folder)";
   inspectorFileKind.textContent = "Folder";
   inspectorPaneActions.hidden = true;
-  setInspectorTab("details", false);
 
   detailEl.innerHTML = `
     <div class="detail-empty">
@@ -2770,7 +3533,6 @@ async function showFileDetail(di, fi) {
     }
 
     inspectorPaneActions.hidden = false;
-    setInspectorTab("preview", false);
     btnDownload.onclick = () => {
       void downloadFileEntry(di, fi);
     };
@@ -3294,8 +4056,6 @@ async function pickAndLoadArchive() {
 }
 
 /* Help */
-navDocs?.addEventListener("click", openHelp);
-welcomeHelp.addEventListener("click", openHelp);
 helpClose.addEventListener("click", () => helpDialog.close());
 helpDialog.addEventListener("click", (e) => {
   const t = /** @type {HTMLElement} */ (e.target);
@@ -3411,6 +4171,47 @@ function initFileTypeFilter() {
 
 initFileTypeFilter();
 
+function initWavAudioPlayer() {
+  previewAudio.addEventListener("loadedmetadata", () => syncAudioPlayerUi());
+  previewAudio.addEventListener("timeupdate", () => {
+    if (wavSeekDragging) return;
+    syncAudioPlayerUi();
+  });
+  previewAudio.addEventListener("play", () => syncAudioPlayButton());
+  previewAudio.addEventListener("pause", () => syncAudioPlayButton());
+  previewAudio.addEventListener("ended", () => syncAudioPlayerUi());
+
+  previewAudioPlay.addEventListener("click", () => {
+    if (previewAudio.paused) {
+      void previewAudio.play().catch(() => {});
+    } else {
+      previewAudio.pause();
+    }
+  });
+
+  previewAudioSeek.addEventListener("pointerdown", () => {
+    wavSeekDragging = true;
+  });
+  previewAudioSeek.addEventListener("pointerup", () => {
+    wavSeekDragging = false;
+    syncAudioPlayerUi();
+  });
+  previewAudioSeek.addEventListener("pointercancel", () => {
+    wavSeekDragging = false;
+    syncAudioPlayerUi();
+  });
+  previewAudioSeek.addEventListener("input", () => {
+    const dur = previewAudio.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const raw = Number(previewAudioSeek.value);
+    const t = Math.min(Math.max(raw, 0), dur);
+    previewAudio.currentTime = t;
+    previewAudioTimeCurrent.textContent = formatWavTime(t);
+  });
+}
+
+initWavAudioPlayer();
+
 skipCrc.addEventListener("change", () => {
   if (state.currentArchive && state.currentBuffer && state.selectedDirIndex >= 0 && state.selectedFileIndex >= 0) {
     void showFileDetail(state.selectedDirIndex, state.selectedFileIndex);
@@ -3436,7 +4237,8 @@ viewModeListBtn.addEventListener("click", () => setFileViewMode("list"));
 viewModeTilesBtn.addEventListener("click", () => setFileViewMode("tiles"));
 
 function inspectorWidthCap() {
-  return Math.min(INSPECTOR_WIDTH_MAX, Math.floor(window.innerWidth * 0.52));
+  const pct = Math.floor(window.innerWidth * 0.52);
+  return Math.max(INSPECTOR_WIDTH_MIN, Math.min(INSPECTOR_WIDTH_MAX, pct));
 }
 
 function applyInspectorColumnWidth(px) {
@@ -3450,13 +4252,13 @@ function clearInspectorColumnWidth() {
 }
 
 function isWorkspaceWideLayout() {
-  return globalThis.matchMedia("(min-width: 1025px)").matches;
+  return globalThis.matchMedia(`(min-width: ${INSPECTOR_LAYOUT_MIN_VIEWPORT}px)`).matches;
 }
 
 function initInspectorResize() {
   let dragging = false;
   let startX = 0;
-  let startW = 304;
+  let startW = INSPECTOR_WIDTH_MIN;
 
   function persistWidth(w) {
     try {
@@ -3490,7 +4292,7 @@ function initInspectorResize() {
 
   applyStoredIfWide();
 
-  globalThis.matchMedia("(min-width: 1025px)").addEventListener("change", (ev) => {
+  globalThis.matchMedia(`(min-width: ${INSPECTOR_LAYOUT_MIN_VIEWPORT}px)`).addEventListener("change", (ev) => {
     if (ev.matches) applyStoredIfWide();
     else clearInspectorColumnWidth();
   });
@@ -3498,7 +4300,7 @@ function initInspectorResize() {
   globalThis.addEventListener("resize", () => {
     if (!isWorkspaceWideLayout()) return;
     if (!workspaceEl.style.gridTemplateColumns) return;
-    const el = getInspectorPanel();
+    const el = getInspectorPanel(getDom());
     if (el) applyInspectorColumnWidth(el.getBoundingClientRect().width);
   });
 
@@ -3507,8 +4309,8 @@ function initInspectorResize() {
     e.preventDefault();
     dragging = true;
     startX = e.clientX;
-    const el = getInspectorPanel();
-    startW = el ? el.getBoundingClientRect().width : 304;
+    const el = getInspectorPanel(getDom());
+    startW = el ? el.getBoundingClientRect().width : INSPECTOR_WIDTH_MIN;
     document.body.classList.add("is-col-resize");
   });
 
@@ -3523,13 +4325,13 @@ function initInspectorResize() {
     dragging = false;
     document.body.classList.remove("is-col-resize");
     if (!isWorkspaceWideLayout()) return;
-    const el = getInspectorPanel();
+    const el = getInspectorPanel(getDom());
     if (el) persistWidth(applyInspectorColumnWidth(el.getBoundingClientRect().width));
   });
 
   inspectorResizeHandle.addEventListener("keydown", (e) => {
     if (!isWorkspaceWideLayout()) return;
-    const el = getInspectorPanel();
+    const el = getInspectorPanel(getDom());
     if (!el) return;
     const step = e.shiftKey ? 48 : 16;
     const cw = el.getBoundingClientRect().width;
@@ -3546,11 +4348,9 @@ function initInspectorResize() {
 initInspectorResize();
 
 try {
-  if (localStorage.getItem(STORAGE_WAV_AUTOPLAY) === "1") {
-    previewAutoplay.checked = true;
-  }
+  previewAutoplay.checked = localStorage.getItem(STORAGE_WAV_AUTOPLAY) !== "0";
 } catch {
-  /* ignore */
+  previewAutoplay.checked = true;
 }
 
 try {
@@ -3690,15 +4490,6 @@ try {
   /* ignore */
 }
 syncFileViewPanels();
-
-tabInspectorPreview.addEventListener("click", () => setInspectorTab("preview"));
-tabInspectorDetails.addEventListener("click", () => setInspectorTab("details"));
-try {
-  const t = localStorage.getItem(STORAGE_INSPECTOR_TAB);
-  if (t === "details") setInspectorTab("details", false);
-} catch {
-  /* ignore */
-}
 
 initFileListKeyboardNav();
 

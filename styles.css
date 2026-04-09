@@ -709,22 +709,6 @@ body {
   color: var(--muted);
 }
 
-.welcome__footnote {
-  margin: 1.15rem 0 0;
-  padding: 0 1.25rem;
-  font-size: 0.78rem;
-  font-family: var(--font-mono);
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  text-transform: uppercase;
-}
-
-.welcome__foot-code {
-  font-size: 0.85em;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
 .recent-wrap {
   margin-top: 1.25rem;
   padding-top: 1.15rem;
@@ -862,7 +846,8 @@ body {
   flex: 1 1 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(200px, 15rem) minmax(0, 1fr) minmax(240px, 19rem);
+  /* Third column: min matches INSPECTOR_WIDTH_MIN in storage-keys.js */
+  grid-template-columns: minmax(200px, 15rem) minmax(0, 1fr) minmax(820px, max(820px, 52vw));
   /* One row fills the shell; minmax(0,1fr) prevents the row growing to max-content (fixes tree scroll). */
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
@@ -871,7 +856,8 @@ body {
   border-top: 1px solid var(--border-subtle);
 }
 
-@media (max-width: 1024px) {
+/* Below INSPECTOR_LAYOUT_MIN_VIEWPORT: stack (wide sidebar needs a wide 3-col row). */
+@media (max-width: 1119px) {
   .workspace {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 30vh) minmax(0, 1fr) minmax(0, 34vh);
@@ -932,7 +918,7 @@ body {
   padding: 0;
 }
 
-@media (min-width: 1025px) {
+@media (min-width: 1120px) {
   .inspector-resize-handle {
     display: block;
   }
@@ -1956,64 +1942,33 @@ body.is-col-resize {
   padding: 0.32rem 0.52rem;
 }
 
-.inspector-tabs {
-  flex-shrink: 0;
+.inspector-pane-stack {
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.inspector-pane--preview {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-pane--details {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(50vh, 28rem);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  border-top: 1px solid var(--border);
   background: var(--surface);
-}
-
-.inspector-tab {
-  flex: 1;
-  margin: 0;
-  padding: 0.48rem 0.65rem;
-  font-family: var(--font-head);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: color 0.1s, background 0.1s, border-color 0.1s;
-}
-
-.inspector-tab:hover {
-  color: var(--text-soft);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.inspector-tab[aria-selected="true"] {
-  color: var(--cyan);
-  border-bottom-color: var(--cyan);
-  background: rgba(0, 240, 255, 0.06);
-}
-
-.inspector-tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.inspector-tab-panels {
-  flex: 1 1 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.inspector-tab-panel {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.inspector-tab-panel[hidden] {
-  display: none !important;
 }
 
 .preview-viewport-shell {
@@ -2022,15 +1977,32 @@ body.is-col-resize {
   display: flex;
   flex-direction: column;
   position: relative;
-  min-height: min(60vh, 32rem);
+  min-height: min(40vh, 22rem);
 }
 
 .detail-stack {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
   padding: 0.75rem 1rem 1rem;
   scrollbar-gutter: stable;
+}
+
+/* Stacked workspace: short inspector row — scroll the whole pane, don’t lock preview height. */
+@media (max-width: 1119px) {
+  .inspector-pane-stack {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .inspector-pane--preview {
+    flex: 0 0 auto;
+  }
+
+  .inspector-pane--details {
+    max-height: none;
+    overflow-y: visible;
+  }
 }
 
 .meta-essentials {
@@ -2296,6 +2268,11 @@ body.is-col-resize {
   box-sizing: border-box;
 }
 
+/* PSX toolbar lives in-flow above the canvas; no extra top band for the overlay */
+.preview-block.preview-block--psx-toolbar {
+  padding-top: 0.65rem;
+}
+
 .preview-overlay-top {
   position: absolute;
   top: 0;
@@ -2408,32 +2385,207 @@ body.is-col-resize {
   flex-direction: column;
   position: relative;
   padding: 0;
+  gap: 0;
+}
+
+.preview-psx-main {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.preview-psx-main .preview-psx-canvas-stack {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.preview-psx-parts-aside {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-width: 0;
+  width: min(10.25rem, 32vw);
+  max-width: 11rem;
+  box-sizing: border-box;
+  background: rgba(8, 10, 14, 0.92);
+  border: 1px solid rgba(0, 240, 255, 0.22);
+  border-left: none;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  backdrop-filter: blur(8px);
+}
+
+.preview-psx-parts-aside.is-collapsed {
+  width: auto;
+  max-width: none;
+}
+
+.preview-psx-parts-toggle {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  width: 100%;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.35);
+  border: none;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.15);
+  cursor: pointer;
+}
+
+.preview-psx-parts-toggle:hover {
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.preview-psx-parts-aside.is-collapsed .preview-psx-parts-toggle {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  width: auto;
+  min-height: 6rem;
+  padding: 0.45rem 0.28rem;
+  border-bottom: none;
+  border-left: 1px solid rgba(0, 240, 255, 0.15);
+}
+
+.preview-psx-part-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 0.4rem 0.45rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.preview-psx-part-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.preview-psx-part-item input {
+  margin-top: 0.12rem;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.preview-psx-canvas-stack {
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+  display: block;
+  min-height: 14rem;
+}
+
+.preview-psx-canvas-stack .preview-psx-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  flex: none;
+  min-height: 0;
+  border-radius: var(--radius-sm);
+}
+
+.preview-psx-canvas-stack .preview-psx-canvas.is-hidden {
+  display: none !important;
+}
+
+.preview-psx-view-mode-row {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.4rem;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.32rem 0.38rem;
+  background: rgba(8, 10, 14, 0.92);
+  border: 1px solid rgba(0, 240, 255, 0.22);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  backdrop-filter: blur(8px);
+}
+
+.preview-psx-view-mode-row .preview-psx-view-mode-toggle {
+  width: 100%;
+  display: flex;
+}
+
+.preview-psx-view-mode-row .preview-psx-view-mode-toggle .view-toggle__btn {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+.preview-psx-view-mode-row .preview-psx-view-mode-toggle .view-toggle__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.preview-psx-uv-canvas {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
 .preview-psx-toolbar {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.3rem 0.45rem;
+  justify-content: flex-start;
+  gap: 0.28rem 0.4rem;
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: min(100%, 38rem);
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  padding: 0.32rem 0.42rem;
+  padding: 0.28rem 0.38rem;
   background: rgba(8, 10, 14, 0.92);
   border: 1px solid rgba(0, 240, 255, 0.22);
-  border-radius: var(--radius-sm);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   backdrop-filter: blur(8px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  box-shadow: none;
+}
+
+/* Canvas sits between toolbar and view-mode row; square off bottom canvas corners */
+.preview-psx-wrap .preview-psx-canvas-stack .preview-psx-canvas {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .preview-psx-stats-hud {
   position: absolute;
   left: 0.35rem;
-  bottom: 2.35rem;
+  /* Clear hint + view-mode row below canvas (see .preview-psx-view-mode-row) */
+  bottom: calc(2.35rem + 2.75rem);
   z-index: 2;
   max-width: calc(100% - 0.75rem);
   padding: 0.22rem 0.42rem;
@@ -2486,12 +2638,13 @@ body.is-col-resize {
 }
 
 .preview-psx-debug-select {
-  min-width: 0;
-  width: 7.75rem;
-  max-width: 32vw;
-  padding: 0.28rem 0.45rem;
+  min-width: 5.5rem;
+  flex: 0 1 7.75rem;
+  width: auto;
+  max-width: min(11rem, 40vw);
+  padding: 0.26rem 0.4rem;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -2528,14 +2681,20 @@ body.is-col-resize {
 }
 
 .preview-psx-source-name {
-  flex: 1 1 5rem;
+  flex: 1 1 4rem;
   min-width: 0;
-  max-width: 10rem;
-  font-size: 0.72rem;
+  max-width: none;
+  font-size: 0.7rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.preview-psx-wrap .preview-psx-canvas-stack {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .preview-psx-canvas {
@@ -2805,6 +2964,12 @@ body.is-col-resize {
   min-height: 0;
   padding: 0 1rem 1rem;
   border-top: none;
+}
+
+.preview-popout-slot .preview-psx-canvas-stack {
+  max-height: none;
+  height: 100%;
+  min-height: 0;
 }
 
 .preview-popout-slot .preview-psx-canvas {

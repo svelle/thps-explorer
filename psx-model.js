@@ -1258,6 +1258,73 @@ function attachTexturesIfAny(dv, fileLen, chunkPtr, texAcc, base, externalTextur
 }
 
 /**
+ * One model blob from the mesh table at origin (for per-part 3D preview toggles).
+ * @param {DataView} dv
+ * @param {number} fileLen
+ * @param {number} chunkPtr
+ * @param {number} ptr
+ * @param {number} modelCountForTextureChunk — same as full file `modelCount` for embedded texture chunk layout
+ * @param {import("./psx-textures.js").PsxTextureSource | null} externalTextureSource
+ */
+function extractPerModelPartForPreview(dv, fileLen, chunkPtr, ptr, modelCountForTextureChunk, externalTextureSource) {
+  const texAcc = [];
+  appendModelTexTris(dv, ptr, fileLen, 0, 0, 0, texAcc);
+  const posAcc = [];
+  const idxAcc = [];
+  const added = extractOneModel(dv, ptr, fileLen, posAcc, idxAcc, 0, 0, 0, 0);
+  if (added <= 0 || posAcc.length < 9) return null;
+  const positions = new Float32Array(posAcc);
+  const nIdx = Math.min(idxAcc.length, MAX_INDICES_TOTAL);
+  const indices = new Uint32Array(nIdx);
+  for (let i = 0; i < nIdx; i++) indices[i] = idxAcc[i];
+  reflectNeversoftForThree(positions);
+  const base = { positions, indices, modelCount: modelCountForTextureChunk };
+  return attachTexturesIfAny(dv, fileLen, chunkPtr, texAcc, base, externalTextureSource);
+}
+
+/**
+ * @param {DataView} dv
+ * @param {number} fileLen
+ * @param {number} expectedCount
+ * @returns {{ ptrs: number[], modelCount: number } | null}
+ */
+function pickModelTableMatchingCount(dv, fileLen, expectedCount) {
+  const resolved = resolveModelTableForDiagnostics(dv, fileLen);
+  if (resolved && resolved.table.modelCount === expectedCount) return resolved.table;
+  const tChar = readModelTablePtrs(dv, 8, fileLen);
+  if (tChar && tChar.modelCount === expectedCount) return tChar;
+  return null;
+}
+
+/**
+ * Per-model mesh data (same shape as `parsePsxLevelGeometry` for one part), or `null` if that slot has no mesh.
+ * @param {Uint8Array} bytes
+ * @param {import("./psx-textures.js").PsxTextureSource | null} externalTextureSource
+ * @param {{ modelCount: number }} parsed — result of `parsePsxLevelGeometry`
+ * @returns {Array<ReturnType<typeof parsePsxLevelGeometry> | null> | null}
+ */
+export function parsePsxPerPartPreviewData(bytes, externalTextureSource, parsed) {
+  if (!parsed || parsed.modelCount <= 1) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const fileLen = bytes.length;
+  const chunkPtr = dv.getUint32(4, true);
+  const table = pickModelTableMatchingCount(dv, fileLen, parsed.modelCount);
+  if (!table) return null;
+  const { ptrs, modelCount } = table;
+  /** @type {Array<ReturnType<typeof parsePsxLevelGeometry> | null>} */
+  const parts = [];
+  for (let m = 0; m < modelCount; m++) {
+    const p = ptrs[m];
+    if (p < 8 || p + 28 > fileLen) {
+      parts.push(null);
+      continue;
+    }
+    parts.push(extractPerModelPartForPreview(dv, fileLen, chunkPtr, p, parsed.modelCount, externalTextureSource));
+  }
+  return parts;
+}
+
+/**
  * @param {Uint8Array} bytes
  * @param {import("./psx-textures.js").PsxTextureSource | null} [externalTextureSource]
  * @returns {{ positions: Float32Array, indices: Uint32Array, modelCount: number, previewPartIndex?: number, multiPartCharacterPreview?: boolean, characterAssembly?: boolean, assemblyRootModelIndex?: number, textured?: object } | null}
